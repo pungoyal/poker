@@ -1,13 +1,30 @@
 /* ── Hero HUD: compact math strip ── */
 .hero-hud {
   display: flex;
-  gap: 2px;
   padding: 6px 12px;
   background: rgba(10, 10, 20, 0.95);
   border-top: 1px solid var(--surface-border);
   flex-shrink: 0;
   justify-content: center;
-  flex-wrap: wrap;
+  align-items: center;
+  min-height: 66px;
+  max-height: 66px;
+  height: 66px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hero-hud::-webkit-scrollbar {
+  display: none;
+}
+
+.hero-hud-track {
+  display: flex;
+  gap: 2px;
+  width: max-content;
+  margin: 0 auto;
 }
 
 .hud-cell {
@@ -145,6 +162,12 @@
 @media (max-width: 1200px) {
   .hero-hud {
     padding: 5px 8px;
+    min-height: 62px;
+    max-height: 62px;
+    height: 62px;
+  }
+
+  .hero-hud-track {
     gap: 4px;
   }
 
@@ -164,9 +187,9 @@
 
 @media (max-width: 900px) {
   .hero-hud {
-    justify-content: flex-start;
-    overflow-x: auto;
-    flex-wrap: nowrap;
+    min-height: 58px;
+    max-height: 58px;
+    height: 58px;
   }
 
   .hud-cell {

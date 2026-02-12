@@ -53,6 +53,7 @@ export const HeroHUD: React.FC = () => {
     stackZone != null;
   return (
     <div className="hero-hud">
+      <div className="hero-hud-track">
       <div className="hud-cell hud-cell-session">
         <span className="hud-label">Session</span>
         <span className="hud-value">{stats.handsPlayed} Hands</span>
@@ -162,6 +163,7 @@ export const HeroHUD: React.FC = () => {
           </span>
         </div>
       )}
+      </div>
     </div>
   );
 };

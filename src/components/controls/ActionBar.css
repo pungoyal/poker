@@ -1,25 +1,30 @@
-/* ── Action bar: truly fixed height ── */
 .action-bar {
   background: var(--surface);
   border-top: 1px solid var(--surface-border);
-  padding: 8px 20px;
+  padding: 8px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
-  min-height: 104px;
-  height: auto;
+  height: clamp(212px, 24svh, 232px);
+  min-height: 212px;
+  max-height: 232px;
+  overflow: hidden;
   align-items: center;
-  justify-content: center;
   width: 100%;
 }
 
-/* Row that always occupies the action-buttons height */
-.action-buttons-row {
+.confirm-slot {
+  width: min(1080px, 100%);
+  min-height: 28px;
   display: flex;
-  justify-content: center;
   align-items: center;
-  min-height: 42px;
+  justify-content: center;
+}
+
+.confirm-placeholder {
+  width: 100%;
+  height: 28px;
 }
 
 .confirm-row {
@@ -30,7 +35,7 @@
   border: 1px solid rgba(239, 68, 68, 0.35);
   color: #ffd3d3;
   border-radius: 8px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-size: 11px;
   font-weight: 700;
 }
@@ -50,26 +55,144 @@
   background: rgba(102, 187, 106, 0.2);
 }
 
+.action-shell {
+  width: min(1080px, 100%);
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 44px 44px 40px 44px;
+  gap: 6px;
+}
+
+.action-buttons-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.waiting-text {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.action-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.action-btn-recommended {
+  outline: 2px solid rgba(125, 211, 252, 0.8);
+  outline-offset: 2px;
+}
+
+.action-btn-fold { background: linear-gradient(135deg, #555, #3a3a3a); color: rgba(255, 255, 255, 0.9); }
+.action-btn-check { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
+.action-btn-call { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
+.action-btn-allin { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
+.action-btn-deal { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: #fff; }
+.action-btn-rebuy { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+
+.shortcut {
+  font-size: 9px;
+  opacity: 0.45;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+}
+
+.hand-complete-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.hand-complete-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hand-result-summary,
+.tournament-complete-text,
+.hero-busted-text,
+.rebuy-count {
+  font-size: 12px;
+}
+
+.insight-slot {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: repeat(3, 1fr);
+  gap: 2px;
+  align-content: center;
+}
+
 .action-recommendation {
   color: #7dd3fc;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.action-recommendation-chart {
-  color: #b4f1c7;
+.action-recommendation-chart { color: #b4f1c7; }
+.action-recommendation-pressure { color: #ffd58a; }
+
+.control-slot {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
 }
 
-.action-recommendation-pressure {
-  color: #ffd58a;
+.control-slot-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.control-placeholder {
+  width: 1px;
+  height: 22px;
 }
 
 .decision-timer-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 11px;
+  gap: 8px;
+  font-size: 10px;
+  flex: 0 0 auto;
 }
 
 .decision-clock,
@@ -90,9 +213,9 @@
 .queue-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .queue-btn {
@@ -100,10 +223,11 @@
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-secondary);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 5px 10px;
+  padding: 4px 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .queue-btn-active {
@@ -115,7 +239,7 @@
 .utility-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .utility-btn {
@@ -123,9 +247,9 @@
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 5px 9px;
+  padding: 4px 8px;
   cursor: pointer;
 }
 
@@ -133,7 +257,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
 }
 
@@ -142,128 +266,45 @@
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(0, 0, 0, 0.35);
   color: var(--text-primary);
-  font-size: 11px;
-  padding: 4px 8px;
+  font-size: 10px;
+  padding: 3px 7px;
 }
 
-.waiting-text {
-  color: var(--text-muted);
-  font-size: 13px;
-  font-style: italic;
-}
-
-/* ── Main action buttons ──────────── */
-.action-buttons {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.action-btn {
-  padding: 10px 28px;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.12s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: inherit;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-}
-
-.action-btn:hover {
-  transform: translateY(-1px);
-  filter: brightness(1.1);
-}
-
-.action-btn:active {
-  transform: translateY(0);
-  filter: brightness(0.95);
-}
-
-.action-btn-recommended {
-  outline: 2px solid rgba(125, 211, 252, 0.8);
-  outline-offset: 2px;
-}
-
-.action-btn-fold {
-  background: linear-gradient(135deg, #555, #3a3a3a);
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.action-btn-check {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
-}
-
-.action-btn-call {
-  background: linear-gradient(135deg, #22c55e, #16a34a);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.25);
-}
-
-.action-btn-allin {
-  background: linear-gradient(135deg, #ef4444, #dc2626);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
-}
-
-.shortcut {
-  font-size: 9px;
-  opacity: 0.45;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: 'Courier New', monospace;
-}
-
-/* ── Sizing row: one-click bet buttons ── */
 .sizing-row {
   display: flex;
   gap: 6px;
-  max-width: 920px;
   width: 100%;
   align-items: center;
+  min-height: 0;
 }
 
 .sizing-btn {
   flex: 1;
-  padding: 7px 8px;
+  padding: 6px 7px;
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.2);
   border-radius: 6px;
   color: #f59e0b;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.12s ease;
-  font-family: inherit;
-  text-align: center;
 }
 
 .sizing-btn:hover {
   background: rgba(245, 158, 11, 0.18);
   color: #fff;
-  border-color: rgba(245, 158, 11, 0.4);
-  transform: translateY(-1px);
 }
 
-.sizing-btn:active {
-  transform: translateY(0);
+.sizing-btn-recommended {
+  border-color: rgba(125, 211, 252, 0.8);
+  color: #7dd3fc;
 }
 
 .custom-size-group {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 320px;
-  margin-left: 2px;
+  min-width: 300px;
 }
 
 .custom-size-group input[type='range'] {
@@ -272,144 +313,49 @@
 }
 
 .custom-size-input {
-  width: 78px;
+  width: 72px;
   border-radius: 6px;
   border: 1px solid rgba(245, 158, 11, 0.35);
   background: rgba(0, 0, 0, 0.35);
   color: #ffd08a;
-  font-size: 12px;
-  padding: 6px 8px;
+  font-size: 11px;
+  padding: 5px 7px;
 }
 
 .sizing-btn-custom {
   flex: 0 0 auto;
-  min-width: 110px;
+  min-width: 98px;
 }
 
-.sizing-btn-recommended {
-  border-color: rgba(125, 211, 252, 0.8);
-  color: #7dd3fc;
-}
-
-/* ── Disabled state ──────────────── */
 .sizing-row-disabled .sizing-btn,
 .sizing-btn:disabled,
 .sizing-row-disabled .custom-size-group input {
-  opacity: 0.3;
+  opacity: 0.35;
   cursor: default;
   pointer-events: none;
 }
 
-/* ── Hand complete / deal next ──── */
-.hand-complete-row {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-
-.hand-result-summary {
-  color: #f59e0b;
-  font-size: 13px;
-  font-weight: 600;
-  text-align: center;
-  max-width: 500px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hand-complete-controls {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.tournament-complete-text {
-  color: #ffe08a;
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.2px;
-}
-
-.action-btn-deal {
-  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
-  animation: deal-pulse 1.8s ease-in-out infinite;
-}
-
-@keyframes deal-pulse {
-  0%, 100% { box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3); }
-  50% { box-shadow: 0 2px 16px rgba(139, 92, 246, 0.55); }
-}
-
-.auto-deal-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.auto-deal-toggle input[type="checkbox"] {
-  accent-color: #8b5cf6;
-  cursor: pointer;
-}
-
-/* ── Hero busted / rebuy ─────────── */
-.hero-busted-text {
-  color: #ef4444;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-}
-
-.action-btn-rebuy {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
-  animation: deal-pulse 1.8s ease-in-out infinite;
-}
-
-.rebuy-count {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-style: italic;
-}
-
 @media (max-width: 1200px) {
-  .action-bar {
-    padding: 8px 12px;
-  }
-
-  .action-btn {
-    padding: 8px 16px;
-    font-size: 13px;
-  }
-
-  .sizing-row {
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-
-  .sizing-btn {
-    min-width: 88px;
-    flex: 0 1 auto;
+  .action-shell {
+    grid-template-rows: 42px 42px 38px 42px;
   }
 
   .custom-size-group {
-    min-width: 0;
-    width: 100%;
-    margin-left: 0;
+    min-width: 260px;
   }
 }
 
 @media (max-width: 900px) {
-  .action-buttons-row {
-    min-height: 36px;
+  .action-bar {
+    padding: 6px 10px;
+    height: clamp(204px, 28svh, 224px);
+    min-height: 204px;
+    max-height: 224px;
+  }
+
+  .action-shell {
+    grid-template-rows: 40px 40px 36px 40px;
+    gap: 5px;
   }
 
   .action-buttons {
@@ -417,62 +363,29 @@
   }
 
   .action-btn {
-    padding: 7px 12px;
-    font-size: 12px;
+    padding: 7px 10px;
+    font-size: 11px;
+  }
+
+  .control-slot {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .control-slot-left {
+    justify-content: center;
   }
 
   .utility-row {
-    width: 100%;
     justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px;
   }
 
   .sizing-row {
     gap: 4px;
   }
 
-  .sizing-btn {
-    min-width: 74px;
-    font-size: 11px;
-    padding: 6px 7px;
-  }
-
-  .custom-size-input {
-    width: 70px;
-    font-size: 11px;
-    padding: 5px 6px;
-  }
-
-  .action-recommendation {
-    font-size: 11px;
-    text-align: center;
-  }
-}
-
-@media (max-height: 760px) {
-  .action-bar {
-    gap: 6px;
-    padding: 6px 10px;
-  }
-
-  .action-buttons-row {
-    min-height: 32px;
-  }
-
-  .action-btn {
-    padding: 6px 10px;
-    font-size: 11px;
-  }
-
-  .utility-btn,
-  .utility-speed,
-  .utility-speed select {
-    font-size: 10px;
-  }
-
-  .sizing-btn {
-    font-size: 10px;
-    padding: 5px 6px;
+  .custom-size-group {
+    min-width: 0;
+    width: 100%;
   }
 }

@@ -144,6 +144,11 @@ export const ActionBar: React.FC = () => {
     return parts.length > 0 ? parts.join(' ') : null;
   }, [isHeroTurn, mathAnalysis]);
 
+  const sizingHintText = isHeroTurn && recommendedSize
+    ? `Sizing hint: ${recommendedSize.label} (~$${recommendedSize.amount})`
+    : null;
+  const guidanceHintText = preflopChartHint ?? tournamentPressureHint;
+
   const requiresConfirm = (action: ActionType, amount?: number): boolean => {
     if (!hero) return false;
     if (action === ActionType.AllIn) return true;
@@ -161,211 +166,217 @@ export const ActionBar: React.FC = () => {
 
   return (
     <div className="action-bar">
-      {pendingConfirm && (
-        <div className="confirm-row">
-          <span>
-            Confirm {pendingConfirm.action} {pendingConfirm.amount ? `$${pendingConfirm.amount}` : ''}?
-          </span>
-          <button className="confirm-btn confirm-btn-yes" onClick={() => {
-            handleAction(pendingConfirm.action, pendingConfirm.amount);
-            setPendingConfirm(null);
-          }}>
-            Confirm
-          </button>
-          <button className="confirm-btn" onClick={() => setPendingConfirm(null)}>
-            Cancel
-          </button>
-        </div>
-      )}
-      {/* Row 1: action buttons, hand result, or waiting */}
-      <div className="action-buttons-row">
-        {game.isHandComplete && game.handNumber > 0 && isHeroBusted ? (
-          <div className="hand-complete-row">
-            <span className="hero-busted-text">You're out of chips!</span>
-            <div className="hand-complete-controls">
-              <button className="action-btn action-btn-rebuy" onClick={() => { rebuyHero(); dealNewHand(); }}>
-                Rebuy ${settings.startingStack}
-              </button>
-              {rebuyCount > 0 && (
-                <span className="rebuy-count">{rebuyCount} rebuy{rebuyCount !== 1 ? 's' : ''}</span>
-              )}
-            </div>
-          </div>
-        ) : tournamentWinner ? (
-          <div className="hand-complete-row">
-            <span className="tournament-complete-text">
-              Tournament Complete: {tournamentWinner.isHuman ? 'You are Champion!' : `${tournamentWinner.name} wins`}
+      <div className="confirm-slot">
+        {pendingConfirm ? (
+          <div className="confirm-row">
+            <span>
+              Confirm {pendingConfirm.action} {pendingConfirm.amount ? `$${pendingConfirm.amount}` : ''}?
             </span>
-            <div className="hand-complete-controls">
-              <button className="action-btn action-btn-deal" onClick={resetSession}>
-                New Tournament
-              </button>
-            </div>
-          </div>
-        ) : game.isHandComplete && game.handNumber > 0 ? (
-          <div className="hand-complete-row">
-            {handResultSummary && (
-              <span className="hand-result-summary">{handResultSummary}</span>
-            )}
-            <div className="hand-complete-controls">
-              {!autoDeal && (
-                <button className="action-btn action-btn-deal" onClick={dealNewHand}>
-                  Deal Next Hand <span className="shortcut">D</span>
-                </button>
-              )}
-              <label className="auto-deal-toggle">
-                <input type="checkbox" checked={autoDeal} onChange={toggleAutoDeal} />
-                Auto-deal
-              </label>
-            </div>
-          </div>
-        ) : isHeroTurn && available ? (
-          <div className="action-buttons">
-            {available.canFold && (
-              <button className={`action-btn action-btn-fold ${recommendedAction === ActionType.Fold ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Fold)}>
-                Fold <span className="shortcut">F</span>
-              </button>
-            )}
-            {available.canCheck && (
-              <button className={`action-btn action-btn-check ${recommendedAction === ActionType.Check ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Check)}>
-                Check <span className="shortcut">C</span>
-              </button>
-            )}
-            {available.canCall && (
-              <button className={`action-btn action-btn-call ${recommendedAction === ActionType.Call ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Call, available.callAmount)}>
-                Call ${available.callAmount} <span className="shortcut">C</span>
-              </button>
-            )}
-            {hero && hero.stack > 0 && (
-              <button className="action-btn action-btn-allin" onClick={() => dispatchAction(ActionType.AllIn)}>
-                All-In ${hero.stack}
-              </button>
-            )}
+            <button className="confirm-btn confirm-btn-yes" onClick={() => {
+              handleAction(pendingConfirm.action, pendingConfirm.amount);
+              setPendingConfirm(null);
+            }}>
+              Confirm
+            </button>
+            <button className="confirm-btn" onClick={() => setPendingConfirm(null)}>
+              Cancel
+            </button>
           </div>
         ) : (
-          <span className="waiting-text">Waiting for action...</span>
+          <div className="confirm-placeholder" />
         )}
-      </div>
-      {isHeroTurn && recommendationText && (
-        <div className="action-recommendation">{recommendationText}</div>
-      )}
-      {isHeroTurn && recommendedSize && (
-        <div className="action-recommendation action-recommendation-chart">
-          Sizing hint: {recommendedSize.label} (~${recommendedSize.amount})
-        </div>
-      )}
-      {preflopChartHint && (
-        <div className="action-recommendation action-recommendation-chart">{preflopChartHint}</div>
-      )}
-      {tournamentPressureHint && (
-        <div className="action-recommendation action-recommendation-pressure">{tournamentPressureHint}</div>
-      )}
-      {isHeroTurn && (
-        <div className="decision-timer-row">
-          <span className={`decision-clock ${decisionClockSec <= 5 ? 'decision-clock-low' : ''}`}>
-            Decision: {decisionClockSec}s
-          </span>
-          <span className={`time-bank ${timeBankSec <= 10 ? 'time-bank-low' : ''}`}>
-            Time Bank: {timeBankSec}s
-          </span>
-        </div>
-      )}
-      {canQueue && (
-        <div className="queue-row">
-          <button
-            className={`queue-btn ${queuedAction === 'check' ? 'queue-btn-active' : ''}`}
-            onClick={() => setQueuedAction(queuedAction === 'check' ? 'none' : 'check')}
-          >
-            Queue Check
-          </button>
-          <button
-            className={`queue-btn ${queuedAction === 'check-fold' ? 'queue-btn-active' : ''}`}
-            onClick={() => setQueuedAction(queuedAction === 'check-fold' ? 'none' : 'check-fold')}
-          >
-            Queue Check/Fold
-          </button>
-          <button
-            className={`queue-btn ${queuedAction === 'call' ? 'queue-btn-active' : ''}`}
-            onClick={() => setQueuedAction(queuedAction === 'call' ? 'none' : 'call')}
-          >
-            Queue Call
-          </button>
-        </div>
-      )}
-      <div className="utility-row">
-        <button className="utility-btn" onClick={togglePause}>
-          {isPaused ? 'Resume AI' : 'Pause AI'}
-        </button>
-        <button className="utility-btn" onClick={toggleSound}>
-          {soundEnabled ? 'Sound On' : 'Sound Off'}
-        </button>
-        <label className="utility-speed">
-          Speed
-          <select
-            value={settings.gameSpeed}
-            onChange={e => updateSettings({ gameSpeed: e.target.value as typeof settings.gameSpeed })}
-          >
-            <option value="slow">Slow</option>
-            <option value="normal">Normal</option>
-            <option value="fast">Fast</option>
-          </select>
-        </label>
       </div>
 
-      {/* Row 2: sizing row — always visible */}
-      <div className={`sizing-row ${!canRaiseOrBet ? 'sizing-row-disabled' : ''}`}>
-        {isPreflop ? (
-          <>
-            <button className={`sizing-btn ${recommendedSize?.label === '2.5 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(2.5))}>2.5 BB</button>
-            <button className={`sizing-btn ${recommendedSize?.label === '3 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(3))}>3 BB</button>
-            <button className={`sizing-btn ${recommendedSize?.label === '4 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(4))}>4 BB</button>
-            <button className={`sizing-btn ${recommendedSize?.label === '5 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(5))}>5 BB</button>
-          </>
-        ) : (
-          <>
-            <button className={`sizing-btn ${recommendedSize?.label === '1/3 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.33))}>1/3 Pot</button>
-            <button className={`sizing-btn ${recommendedSize?.label === '1/2 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.5))}>1/2 Pot</button>
-            <button className={`sizing-btn ${recommendedSize?.label === '3/4 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.75))}>3/4 Pot</button>
-            <button className="sizing-btn" disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(1))}>Pot</button>
-          </>
-        )}
-        <div className="custom-size-group">
-          <input
-            type="range"
-            min={Math.max(minRaiseTotal, 1)}
-            max={Math.max(maxRaise, Math.max(minRaiseTotal, 1))}
-            step={1}
-            value={Math.max(customAmount, Math.max(minRaiseTotal, 1))}
-            disabled={!canRaiseOrBet}
-            onChange={e =>
-              setCustomState({
-                key: contextKey,
-                amount: clamp(Number(e.target.value) || minRaiseTotal),
-              })
-            }
-          />
-          <input
-            className="custom-size-input"
-            type="number"
-            min={Math.max(minRaiseTotal, 1)}
-            max={Math.max(maxRaise, Math.max(minRaiseTotal, 1))}
-            step={1}
-            value={Math.max(customAmount, Math.max(minRaiseTotal, 1))}
-            disabled={!canRaiseOrBet}
-            onChange={e =>
-              setCustomState({
-                key: contextKey,
-                amount: clamp(Number(e.target.value) || minRaiseTotal),
-              })
-            }
-          />
-          <button
-            className={`sizing-btn sizing-btn-custom ${recommendedAction === ActionType.Raise ? 'sizing-btn-recommended' : ''}`}
-            disabled={!canRaiseOrBet}
-            onClick={() => canRaiseOrBet && dispatchAction(raiseAction, clamp(customAmount))}
-          >
-            {available?.canBet ? 'Bet' : 'Raise'} ${clamp(customAmount)}
-          </button>
+      <div className="action-shell">
+        <div className="action-buttons-row">
+          {game.isHandComplete && game.handNumber > 0 && isHeroBusted ? (
+            <div className="hand-complete-row">
+              <span className="hero-busted-text">You're out of chips!</span>
+              <div className="hand-complete-controls">
+                <button className="action-btn action-btn-rebuy" onClick={() => { rebuyHero(); dealNewHand(); }}>
+                  Rebuy ${settings.startingStack}
+                </button>
+                {rebuyCount > 0 && (
+                  <span className="rebuy-count">{rebuyCount} rebuy{rebuyCount !== 1 ? 's' : ''}</span>
+                )}
+              </div>
+            </div>
+          ) : tournamentWinner ? (
+            <div className="hand-complete-row">
+              <span className="tournament-complete-text">
+                Tournament Complete: {tournamentWinner.isHuman ? 'You are Champion!' : `${tournamentWinner.name} wins`}
+              </span>
+              <div className="hand-complete-controls">
+                <button className="action-btn action-btn-deal" onClick={resetSession}>
+                  New Tournament
+                </button>
+              </div>
+            </div>
+          ) : game.isHandComplete && game.handNumber > 0 ? (
+            <div className="hand-complete-row">
+              {handResultSummary && (
+                <span className="hand-result-summary">{handResultSummary}</span>
+              )}
+              <div className="hand-complete-controls">
+                {!autoDeal && (
+                  <button className="action-btn action-btn-deal" onClick={dealNewHand}>
+                    Deal Next Hand <span className="shortcut">D</span>
+                  </button>
+                )}
+                <label className="auto-deal-toggle">
+                  <input type="checkbox" checked={autoDeal} onChange={toggleAutoDeal} />
+                  Auto-deal
+                </label>
+              </div>
+            </div>
+          ) : isHeroTurn && available ? (
+            <div className="action-buttons">
+              {available.canFold && (
+                <button className={`action-btn action-btn-fold ${recommendedAction === ActionType.Fold ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Fold)}>
+                  Fold <span className="shortcut">F</span>
+                </button>
+              )}
+              {available.canCheck && (
+                <button className={`action-btn action-btn-check ${recommendedAction === ActionType.Check ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Check)}>
+                  Check <span className="shortcut">C</span>
+                </button>
+              )}
+              {available.canCall && (
+                <button className={`action-btn action-btn-call ${recommendedAction === ActionType.Call ? 'action-btn-recommended' : ''}`} onClick={() => dispatchAction(ActionType.Call, available.callAmount)}>
+                  Call ${available.callAmount} <span className="shortcut">C</span>
+                </button>
+              )}
+              {hero && hero.stack > 0 && (
+                <button className="action-btn action-btn-allin" onClick={() => dispatchAction(ActionType.AllIn)}>
+                  All-In ${hero.stack}
+                </button>
+              )}
+            </div>
+          ) : (
+            <span className="waiting-text">Waiting for action...</span>
+          )}
+        </div>
+
+        <div className="insight-slot">
+          <div className="action-recommendation">{isHeroTurn && recommendationText ? recommendationText : ' '}</div>
+          <div className="action-recommendation action-recommendation-chart">{sizingHintText ?? ' '}</div>
+          <div className="action-recommendation action-recommendation-pressure">{guidanceHintText ?? ' '}</div>
+        </div>
+
+        <div className="control-slot">
+          <div className="control-slot-left">
+            {isHeroTurn ? (
+              <div className="decision-timer-row">
+                <span className={`decision-clock ${decisionClockSec <= 5 ? 'decision-clock-low' : ''}`}>
+                  Decision: {decisionClockSec}s
+                </span>
+                <span className={`time-bank ${timeBankSec <= 10 ? 'time-bank-low' : ''}`}>
+                  Time Bank: {timeBankSec}s
+                </span>
+              </div>
+            ) : (
+              <div className="control-placeholder" />
+            )}
+            {canQueue ? (
+              <div className="queue-row">
+                <button
+                  className={`queue-btn ${queuedAction === 'check' ? 'queue-btn-active' : ''}`}
+                  onClick={() => setQueuedAction(queuedAction === 'check' ? 'none' : 'check')}
+                >
+                  Queue Check
+                </button>
+                <button
+                  className={`queue-btn ${queuedAction === 'check-fold' ? 'queue-btn-active' : ''}`}
+                  onClick={() => setQueuedAction(queuedAction === 'check-fold' ? 'none' : 'check-fold')}
+                >
+                  Queue Check/Fold
+                </button>
+                <button
+                  className={`queue-btn ${queuedAction === 'call' ? 'queue-btn-active' : ''}`}
+                  onClick={() => setQueuedAction(queuedAction === 'call' ? 'none' : 'call')}
+                >
+                  Queue Call
+                </button>
+              </div>
+            ) : (
+              <div className="control-placeholder" />
+            )}
+          </div>
+          <div className="utility-row">
+            <button className="utility-btn" onClick={togglePause}>
+              {isPaused ? 'Resume AI' : 'Pause AI'}
+            </button>
+            <button className="utility-btn" onClick={toggleSound}>
+              {soundEnabled ? 'Sound On' : 'Sound Off'}
+            </button>
+            <label className="utility-speed">
+              Speed
+              <select
+                value={settings.gameSpeed}
+                onChange={e => updateSettings({ gameSpeed: e.target.value as typeof settings.gameSpeed })}
+              >
+                <option value="slow">Slow</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div className={`sizing-row ${!canRaiseOrBet ? 'sizing-row-disabled' : ''}`}>
+          {isPreflop ? (
+            <>
+              <button className={`sizing-btn ${recommendedSize?.label === '2.5 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(2.5))}>2.5 BB</button>
+              <button className={`sizing-btn ${recommendedSize?.label === '3 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(3))}>3 BB</button>
+              <button className={`sizing-btn ${recommendedSize?.label === '4 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(4))}>4 BB</button>
+              <button className={`sizing-btn ${recommendedSize?.label === '5 BB' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, bbAmount(5))}>5 BB</button>
+            </>
+          ) : (
+            <>
+              <button className={`sizing-btn ${recommendedSize?.label === '1/3 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.33))}>1/3 Pot</button>
+              <button className={`sizing-btn ${recommendedSize?.label === '1/2 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.5))}>1/2 Pot</button>
+              <button className={`sizing-btn ${recommendedSize?.label === '3/4 Pot' ? 'sizing-btn-recommended' : ''}`} disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(0.75))}>3/4 Pot</button>
+              <button className="sizing-btn" disabled={!canRaiseOrBet} onClick={() => canRaiseOrBet && dispatchAction(raiseAction, potAmount(1))}>Pot</button>
+            </>
+          )}
+          <div className="custom-size-group">
+            <input
+              type="range"
+              min={Math.max(minRaiseTotal, 1)}
+              max={Math.max(maxRaise, Math.max(minRaiseTotal, 1))}
+              step={1}
+              value={Math.max(customAmount, Math.max(minRaiseTotal, 1))}
+              disabled={!canRaiseOrBet}
+              onChange={e =>
+                setCustomState({
+                  key: contextKey,
+                  amount: clamp(Number(e.target.value) || minRaiseTotal),
+                })
+              }
+            />
+            <input
+              className="custom-size-input"
+              type="number"
+              min={Math.max(minRaiseTotal, 1)}
+              max={Math.max(maxRaise, Math.max(minRaiseTotal, 1))}
+              step={1}
+              value={Math.max(customAmount, Math.max(minRaiseTotal, 1))}
+              disabled={!canRaiseOrBet}
+              onChange={e =>
+                setCustomState({
+                  key: contextKey,
+                  amount: clamp(Number(e.target.value) || minRaiseTotal),
+                })
+              }
+            />
+            <button
+              className={`sizing-btn sizing-btn-custom ${recommendedAction === ActionType.Raise ? 'sizing-btn-recommended' : ''}`}
+              disabled={!canRaiseOrBet}
+              onClick={() => canRaiseOrBet && dispatchAction(raiseAction, clamp(customAmount))}
+            >
+              {available?.canBet ? 'Bet' : 'Raise'} ${clamp(customAmount)}
+            </button>
+          </div>
         </div>
       </div>
     </div>

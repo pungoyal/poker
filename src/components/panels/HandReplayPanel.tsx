@@ -26,15 +26,23 @@ function actionLabel(type: ActionType): string {
 
 export const HandReplayPanel: React.FC = () => {
   const handHistory = useGameStore(s => s.handHistory);
+  const toggleHandMarked = useGameStore(s => s.toggleHandMarked);
   const [open, setOpen] = useState(true);
   const [selectedHandNumber, setSelectedHandNumber] = useState<number | null>(null);
   const [step, setStep] = useState(0);
+  const [markedOnly, setMarkedOnly] = useState(false);
+
+  const visibleHands = useMemo(() => {
+    const sorted = [...handHistory].reverse().slice(0, 50);
+    if (!markedOnly) return sorted;
+    return sorted.filter(h => h.marked);
+  }, [handHistory, markedOnly]);
 
   const selected = useMemo(() => {
-    if (handHistory.length === 0) return null;
-    if (selectedHandNumber == null) return handHistory[handHistory.length - 1];
-    return handHistory.find(h => h.handNumber === selectedHandNumber) ?? handHistory[handHistory.length - 1];
-  }, [handHistory, selectedHandNumber]);
+    if (visibleHands.length === 0) return null;
+    if (selectedHandNumber == null) return visibleHands[0];
+    return visibleHands.find(h => h.handNumber === selectedHandNumber) ?? visibleHands[0];
+  }, [visibleHands, selectedHandNumber]);
 
   const replayLines = useMemo(() => {
     if (!selected) return [];
@@ -71,22 +79,40 @@ export const HandReplayPanel: React.FC = () => {
             <label>
               Hand
               <select
-                value={selected.handNumber}
+                value={selected?.handNumber ?? ''}
                 onChange={e => {
                   setSelectedHandNumber(Number(e.target.value));
                   setStep(0);
                 }}
               >
-                {[...handHistory].reverse().slice(0, 30).map(h => (
+                {visibleHands.slice(0, 30).map(h => (
                   <option key={h.handNumber} value={h.handNumber}>
-                    #{h.handNumber}
+                    {h.marked ? '★ ' : ''}#{h.handNumber}
                   </option>
                 ))}
               </select>
             </label>
+            <label className="replay-marked-filter">
+              <input
+                type="checkbox"
+                checked={markedOnly}
+                onChange={e => {
+                  setMarkedOnly(e.target.checked);
+                  setSelectedHandNumber(null);
+                  setStep(0);
+                }}
+              />
+              Marked only
+            </label>
             <span className={`replay-net ${selected.heroNetChips >= 0 ? 'replay-net-plus' : 'replay-net-minus'}`}>
               Hero {selected.heroNetChips >= 0 ? '+' : ''}{selected.heroNetChips}
             </span>
+          </div>
+
+          <div className="replay-mark-row">
+            <button className="replay-mark-btn" onClick={() => toggleHandMarked(selected.handNumber)}>
+              {selected.marked ? 'Unmark Hand' : 'Mark Hand'}
+            </button>
           </div>
 
           <div className="replay-coach">

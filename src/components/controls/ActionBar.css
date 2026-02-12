@@ -114,6 +114,7 @@
 .action-btn-allin { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
 .action-btn-deal { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: #fff; }
 .action-btn-rebuy { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+.action-btn-mark { background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; }
 
 .shortcut {
   font-size: 9px;
@@ -195,19 +196,12 @@
   flex: 0 0 auto;
 }
 
-.decision-clock,
-.time-bank {
+.decision-clock {
   padding: 3px 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
   color: #bfe7ff;
   font-weight: 700;
-}
-
-.decision-clock-low,
-.time-bank-low {
-  color: #ffb4b4;
-  background: rgba(239, 68, 68, 0.18);
 }
 
 .queue-row {

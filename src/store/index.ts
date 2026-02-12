@@ -72,8 +72,6 @@ interface GameStore {
   autoDeal: boolean;
   isPaused: boolean;
   soundEnabled: boolean;
-  decisionClockSec: number;
-  timeBankSec: number;
   queuedAction: 'none' | 'check' | 'check-fold' | 'call';
   rebuyCount: number;
   sessionStats: SessionStats;
@@ -109,8 +107,6 @@ interface GameStore {
   toggleAutoDeal: () => void;
   togglePause: () => void;
   toggleSound: () => void;
-  setDecisionClockSec: (seconds: number) => void;
-  setTimeBankSec: (seconds: number) => void;
   setQueuedAction: (action: 'none' | 'check' | 'check-fold' | 'call') => void;
   rebuyHero: () => void;
   addCommentary: (entry: CommentaryEntry) => void;
@@ -118,6 +114,7 @@ interface GameStore {
   resetSession: () => void;
   setMathAnalysis: (analysis: MathAnalysis | null) => void;
   updateSettings: (settings: Partial<GameSettings>) => void;
+  toggleHandMarked: (handNumber: number) => void;
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -129,8 +126,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
   autoDeal: prefs.autoDeal ?? false,
   isPaused: false,
   soundEnabled: prefs.soundEnabled ?? true,
-  decisionClockSec: 12,
-  timeBankSec: 30,
   queuedAction: 'none',
   rebuyCount: 0,
   sessionStats: DEFAULT_SESSION_STATS,
@@ -167,8 +162,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       heroStackAtHandStart: settings.startingStack,
       rebuyCount: 0,
       handHistory: [],
-      decisionClockSec: 12,
-      timeBankSec: 30,
       queuedAction: 'none' as const,
       opponentStats: emptyOpponentStats(game),
       currentHandVpipByPlayer: {},
@@ -219,8 +212,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       currentHandVPIP: false,
       currentHandPFR: false,
       heroStackAtHandStart: heroBeforeHand,
-      decisionClockSec: 12,
-      timeBankSec: 30,
       queuedAction: 'none',
       currentHandVpipByPlayer,
       currentHandPfrByPlayer,
@@ -480,8 +471,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
           };
         }),
         heroNetChips: heroAfter - heroStackAtHandStart,
-        actions: completed.actions,
-        coach: {
+      actions: completed.actions,
+      marked: false,
+      coach: {
           goodDecisions: currentHandGoodDecisions,
           mistakes: currentHandMistakes,
           worstDeltaEv: Number(currentHandWorstDeltaEv.toFixed(2)),
@@ -564,8 +556,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     persistPrefs({ ...s, ...next });
     return next;
   }),
-  setDecisionClockSec: (seconds) => set({ decisionClockSec: Math.max(0, Math.floor(seconds)) }),
-  setTimeBankSec: (seconds) => set({ timeBankSec: Math.max(0, Math.floor(seconds)) }),
   setQueuedAction: (action) => set({ queuedAction: action }),
   rebuyHero: () => {
     const { game, settings, rebuyCount } = get();
@@ -609,8 +599,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       currentHandWorstSpot: '',
       rebuyCount: 0,
       isPaused: false,
-      decisionClockSec: 12,
-      timeBankSec: 30,
       queuedAction: 'none',
     });
   },
@@ -620,4 +608,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     persistPrefs({ ...s, ...next });
     return next;
   }),
+  toggleHandMarked: (handNumber) => set(s => ({
+    handHistory: s.handHistory.map(h =>
+      h.handNumber === handNumber ? { ...h, marked: !h.marked } : h
+    ),
+  })),
 }));

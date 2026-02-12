@@ -49,14 +49,11 @@ export function useAudioCues() {
   const game = useGameStore(s => s.game);
   const isPaused = useGameStore(s => s.isPaused);
   const soundEnabled = useGameStore(s => s.soundEnabled);
-  const decisionClockSec = useGameStore(s => s.decisionClockSec);
-  const timeBankSec = useGameStore(s => s.timeBankSec);
   const beep = useBeep();
 
   const prevActionsLen = useRef(0);
   const prevStreet = useRef<Street | null>(null);
   const prevHandComplete = useRef(false);
-  const lowTimeAlerted = useRef(false);
 
   useEffect(() => {
     if (!soundEnabled || isPaused) return;
@@ -106,14 +103,4 @@ export function useAudioCues() {
     }
   }, [game.isHandComplete, game.handNumber]);
 
-  useEffect(() => {
-    if (!soundEnabled) return;
-    if (decisionClockSec <= 5 && decisionClockSec > 0 && !lowTimeAlerted.current) {
-      lowTimeAlerted.current = true;
-      beep(330, 70, 0.025, 'triangle');
-    }
-    if (decisionClockSec > 5 || timeBankSec > 0) {
-      lowTimeAlerted.current = false;
-    }
-  }, [decisionClockSec, timeBankSec, soundEnabled, beep]);
 }

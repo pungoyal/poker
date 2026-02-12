@@ -50,6 +50,16 @@
   color: var(--text-muted);
 }
 
+.replay-marked-filter {
+  font-size: 10px;
+  color: var(--text-muted);
+  gap: 5px;
+}
+
+.replay-marked-filter input[type='checkbox'] {
+  accent-color: #7dd3fc;
+}
+
 .replay-controls-top select {
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -70,6 +80,22 @@
 
 .replay-net-minus {
   color: #ef5350;
+}
+
+.replay-mark-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.replay-mark-btn {
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  background: rgba(125, 211, 252, 0.12);
+  color: #c9ecff;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 .replay-coach {

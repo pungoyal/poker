@@ -22,6 +22,8 @@ export const ActionBar: React.FC = () => {
   const toggleSound = useGameStore(s => s.toggleSound);
   const queuedAction = useGameStore(s => s.queuedAction);
   const setQueuedAction = useGameStore(s => s.setQueuedAction);
+  const handHistory = useGameStore(s => s.handHistory);
+  const toggleHandMarked = useGameStore(s => s.toggleHandMarked);
 
   const rebuyHero = useGameStore(s => s.rebuyHero);
   const rebuyCount = useGameStore(s => s.rebuyCount);
@@ -142,10 +144,52 @@ export const ActionBar: React.FC = () => {
     return parts.length > 0 ? parts.join(' ') : null;
   }, [isHeroTurn, mathAnalysis]);
 
+  const stageBannerText = useMemo(() => {
+    if (!isHeroTurn || !mathAnalysis?.context?.pressureStage) return null;
+    const stage = mathAnalysis.context.pressureStage;
+    if (stage === 'early') return 'Stage: Early - build fundamentals, avoid thin hero calls.';
+    if (stage === 'middle') return 'Stage: Middle - open spots aggressively, protect stack quality.';
+    if (stage === 'late') return 'Stage: Late - leverage fold equity and position.';
+    if (stage === 'final-table') return 'Stage: Final Table - ICM pressure is high, pick high-EV all-ins.';
+    return 'Stage: Bubble - tighten marginal stacks offs, attack medium stacks.';
+  }, [isHeroTurn, mathAnalysis]);
+
+  const evLadderText = useMemo(() => {
+    if (!isHeroTurn || !recommendation) return null;
+    return `EV Ladder: Fold ${recommendation.foldEV >= 0 ? '+' : ''}${recommendation.foldEV.toFixed(0)} | Call ${recommendation.callEV >= 0 ? '+' : ''}${recommendation.callEV.toFixed(0)} | Raise ${recommendation.raiseEV >= 0 ? '+' : ''}${recommendation.raiseEV.toFixed(0)}`;
+  }, [isHeroTurn, recommendation]);
+
+  const preflopBlueprint = useMemo(() => {
+    if (!isHeroTurn || !hero?.holeCards || game.street !== Street.Preflop || !available) return null;
+    const notation = handNotation(hero.holeCards);
+    const tier = getHandTier(notation);
+    const zone = mathAnalysis?.context?.stackZone;
+    const unopened = available.callAmount === 0;
+    const latePos = hero.position === Position.Button || hero.position === Position.CO || hero.position === Position.HJ;
+    if (zone === 'critical' || zone === 'push-fold') {
+      if (tier === HandTier.Premium || tier === HandTier.Strong) return `Blueprint: ${notation} is jam-priority at ${hero.position}.`;
+      if (tier === HandTier.Medium && latePos) return `Blueprint: ${notation} can jam/fold mix in late position.`;
+      return `Blueprint: ${notation} mostly fold in ${zone === 'critical' ? 'critical' : 'push/fold'} zone.`;
+    }
+    if (unopened) {
+      if (tier === HandTier.Premium || tier === HandTier.Strong) return `Blueprint: Open-raise ${notation}; continue aggressively vs 3-bets.`;
+      if (tier === HandTier.Medium && latePos) return `Blueprint: Open ${notation} from late position at mixed frequency.`;
+      return `Blueprint: Default fold ${notation} from ${hero.position} unless table is very passive.`;
+    }
+    if (tier === HandTier.Premium) return `Blueprint: 3-bet/call-off with ${notation} vs open.`;
+    if (tier === HandTier.Strong) return `Blueprint: Continue ${notation}; prefer IP calls, OOP 3-bet mix.`;
+    return `Blueprint: Fold dominated ${notation} versus pressure unless pot odds are exceptional.`;
+  }, [available, game.street, hero, isHeroTurn, mathAnalysis]);
+
   const sizingHintText = isHeroTurn && recommendedSize
     ? `Sizing hint: ${recommendedSize.label} (~$${recommendedSize.amount})`
     : null;
-  const guidanceHintText = preflopChartHint ?? tournamentPressureHint;
+  const guidanceHintText = preflopBlueprint ?? preflopChartHint ?? tournamentPressureHint;
+
+  const latestCompletedHand = useMemo(() => {
+    if (!game.isHandComplete || game.handNumber <= 0) return null;
+    return handHistory.find(h => h.handNumber === game.handNumber) ?? null;
+  }, [game.handNumber, game.isHandComplete, handHistory]);
 
   const requiresConfirm = (action: ActionType, amount?: number): boolean => {
     if (!hero) return false;
@@ -221,6 +265,14 @@ export const ActionBar: React.FC = () => {
                     Deal Next Hand <span className="shortcut">D</span>
                   </button>
                 )}
+                {latestCompletedHand && (
+                  <button
+                    className="action-btn action-btn-mark"
+                    onClick={() => toggleHandMarked(latestCompletedHand.handNumber)}
+                  >
+                    {latestCompletedHand.marked ? 'Unmark Hand' : 'Mark Hand'}
+                  </button>
+                )}
                 <label className="auto-deal-toggle">
                   <input type="checkbox" checked={autoDeal} onChange={toggleAutoDeal} />
                   Auto-deal
@@ -256,9 +308,9 @@ export const ActionBar: React.FC = () => {
         </div>
 
         <div className="insight-slot">
-          <div className="action-recommendation">{isHeroTurn && recommendationText ? recommendationText : ' '}</div>
-          <div className="action-recommendation action-recommendation-chart">{sizingHintText ?? ' '}</div>
-          <div className="action-recommendation action-recommendation-pressure">{guidanceHintText ?? ' '}</div>
+          <div className="action-recommendation action-recommendation-pressure">{stageBannerText ?? ' '}</div>
+          <div className="action-recommendation">{evLadderText ?? recommendationText ?? ' '}</div>
+          <div className="action-recommendation action-recommendation-chart">{sizingHintText ?? guidanceHintText ?? ' '}</div>
         </div>
 
         <div className="control-slot">

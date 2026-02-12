@@ -11,6 +11,7 @@ export interface HandHistoryEntry {
   winners: { playerId: string; playerName: string; amount: number; hand?: string }[];
   heroNetChips: number;
   actions: PlayerAction[];
+  marked: boolean;
   coach: {
     goodDecisions: number;
     mistakes: number;

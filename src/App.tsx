@@ -10,6 +10,7 @@ import { HeroHUD } from './components/controls/HeroHUD';
 import { CommentaryPanel } from './components/panels/CommentaryPanel';
 import { HandReplayPanel } from './components/panels/HandReplayPanel';
 import { RivalSpotlightPanel } from './components/panels/RivalSpotlightPanel';
+import { LeakDetectorPanel } from './components/panels/LeakDetectorPanel';
 import './App.css';
 
 const App: React.FC = () => {
@@ -51,6 +52,7 @@ const App: React.FC = () => {
       heroNetChips: h.heroNetChips,
       winners: h.winners,
       actions: h.actions,
+      marked: h.marked,
       coach: h.coach,
     }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -252,6 +254,7 @@ const App: React.FC = () => {
 
         <div className="right-panel">
           <RivalSpotlightPanel />
+          <LeakDetectorPanel />
           <CommentaryPanel />
           <HandReplayPanel />
         </div>

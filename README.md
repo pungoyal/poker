@@ -1,205 +1,249 @@
 # Poker Lab
 
-A single-player **No-Limit Texas Hold'em training app** built with React + TypeScript.
-You play as hero at a 9-max table against personality-driven AI opponents while the app explains decisions with pot odds, equity, outs, EV, and coaching feedback.
+Poker Lab is a 9-max No-Limit Texas Hold'em training simulator focused on decision quality for tournament and high-level cash play.
+
+You play as Hero against personality-based AI opponents while the app explains each spot with equity, pot odds, EV, stack pressure context, and post-hand coaching signals.
 
 ## Screenshot
 
 ![Poker Lab table screenshot](./screenshot.png)
 
-## What This Project Includes
+## Current Gameplay Logic
 
-- Full 9-max table flow: preflop, flop, turn, river, showdown.
-- Cash and tournament modes.
-- AI opponents with distinct personalities (TAG, LAG, Nit, Maniac, Calling Station).
-- Hero coaching HUD with real-time math and recommended actions.
-- Action controls with preset sizings, custom slider, all-in confirm, and queued pre-actions.
-- Commentary feed (situation, math insight, recommendations, AI actions, showdown, hand review).
-- Rival Spotlight panel with exploit notes from observed stats.
-- Hand replay panel with step-by-step action timeline.
-- Session tracking (hands, net chips, VPIP/PFR, bb/100, coaching score).
-- Hand history export to JSON.
+## Core Hand Engine
 
-## Design Goals
-
-Poker Lab is designed around four principles:
-
-1. **Fast decision loops**: minimal clicks, keyboard actions, and clear action states.
-2. **Explainability**: every recommendation is backed by transparent numbers.
-3. **Exploit practice**: opponents have recognizable leaks and tendencies.
-4. **Reviewability**: replay, commentary, and hand exports support study.
-
-## Core UX Layout
-
-- **Center area**
-  - Poker table (seats, community cards, pot, dealer button, action ticker)
-  - Hero HUD (math + session/coach indicators)
-  - Action bar (buttons, sizings, timer, utility toggles)
-- **Right panel**
-  - Rival Spotlight
-  - Commentary
-  - Hand Replay
+- Full hand loop: preflop -> flop -> turn -> river -> showdown.
+- Side-pot calculation and winner resolution.
+- Position/dealer rotation and blind posting.
+- Auto-advance streets after betting rounds complete.
+- AI turn delays based on speed setting (`slow`, `normal`, `fast`).
 
 ## Game Modes
 
 ### Cash
 - Static blinds.
-- Rebuy available when hero busts.
+- Hero can rebuy on bust.
 
 ### Tournament
-- Blinds increase every N hands (`blindIncreaseEveryHands`) by multiplier (`blindIncreaseFactor`).
-- Optional antes using `anteBb` (fraction of big blind).
-- Ends when one player has chips.
+- Blind levels increase every `blindIncreaseEveryHands` by `blindIncreaseFactor`.
+- Antes supported via `anteEnabled` and `anteBb`.
+- Ends when one player remains.
 
-## AI System
+## AI Opponent Logic
 
-### Personalities
-- **TAG**: selective, fundamentally strong, position-aware.
-- **LAG**: wide and aggressive, high pressure and bluff frequency.
-- **Nit**: very tight, low bluff rate, straightforward ranges.
-- **Maniac**: hyper-aggressive, wide and volatile.
-- **Calling Station**: over-calls, under-raises, hard to bluff.
+Personalities with distinct frequencies and aggression models:
 
-### Skill Levels
-- **Novice**: lower strategic awareness, more mistakes.
-- **Standard**: baseline profile behavior.
-- **Elite**: stronger positional/GTO-like adjustments and pressure.
+- TAG
+- LAG
+- Nit
+- Maniac
+- Calling Station
 
-## Math + Coaching Engine
+AI decisions combine:
 
-When it is hero's turn, the app computes context-aware analysis:
+- profile frequencies (VPIP/PFR/3-bet/c-bet/bluff/fold-to-aggression)
+- hand strength approximation
+- board texture
+- positional awareness
+- skill level adjustments (`novice`, `standard`, `elite`)
+- live adaptation to Hero tendencies (VPIP/PFR pressure response)
 
-- Hand strength (postflop)
-- Outs (flop/turn)
-- Pot odds
+## Hero Decision Intelligence
+
+When it is Hero's turn, the app computes live `MathAnalysis`:
+
+- hand strength (postflop)
+- draws/outs (flop/turn)
+- pot odds
 - Monte Carlo equity
-- EV estimate (call/raise/fold framing)
-- Board texture and SPR context
-- Preflop notation/tier hints
+- EV ladder (fold/call/raise)
+- SPR and board texture
+- preflop notation + tier
+- tournament pressure context
 
-The results feed:
+## Tournament Pressure Engine
 
-- Hero HUD display
-- Commentary recommendations
-- Action bar recommended move/sizing highlights
-- Coaching score updates and per-decision EV delta
+The strategy context now includes:
 
-## Controls
+- `heroStackBb`
+- `averageStackBb`
+- `playersRemaining`
+- `heroRankByStack`
+- `mRatio`
+- `stackZone` (`comfort`, `pressure`, `push-fold`, `critical`)
+- `pressureStage` (`early`, `middle`, `late`, `final-table`, `bubble`)
+- short-stack push/fold hints
 
-### Keyboard
+This context powers HUD metrics, stage messaging, and action guidance.
+
+## Action Bar (Redesigned)
+
+The bottom action panel is a fixed-shell layout (stable UX, no jumpy resizing) with 4 consistent sections:
+
+1. action controls (fold/check/call/all-in + hand-complete controls)
+2. insight slot (stage banner, EV ladder, strategy hint)
+3. control slot (no timer indicator, queued actions, utility controls)
+4. sizing slot (preset sizings + custom slider/input)
+
+### Decision Timing
+
+- **No hero timer**.
+- No auto-timeout fold/check/call.
+- Hero can take unlimited time per decision.
+
+## Real-Time Training Features
+
+- EV Ladder display in decision spots (`Fold | Call | Raise`).
+- Stage banner for tournament phase guidance.
+- Preflop blueprint guidance (position + tier + stack zone aware).
+- Recommended sizing highlight from context.
+- Commentary stream (situation, math, recommendation, AI action, showdown, hand review).
+
+## Right-Side Panels
+
+### Rival Spotlight
+
+- identifies exploit target from opponent stats
+- shows VPIP/PFR/AF + confidence
+- provides exploit line + tactical plan
+
+### Leak Detector (new)
+
+- session-level leak checks (looseness, passivity gap, EV bleed)
+- severity-ranked fixes (`high`, `medium`, `low`)
+- updates as sample size grows
+
+### Hand Replay
+
+- step-by-step action replay per hand
+- coach summary for that hand (good decisions, mistakes, worst EV leak)
+- mark/unmark hands
+- filter by `Marked only`
+
+## Coaching and Review Data
+
+## Session Coaching
+
+Tracked live:
+
+- coaching score
+- good decisions
+- major mistakes
+- last decision EV delta
+
+## Per-Hand Coaching Snapshot
+
+Saved in hand history:
+
+- `goodDecisions`
+- `mistakes`
+- `worstDeltaEv`
+- `worstSpot`
+- `marked`
+
+## Hand Export JSON
+
+Export includes:
+
+- hand metadata (number/time)
+- hero cards and board
+- pot and winners
+- full action timeline
+- hero net chips
+- player map
+- coach summary
+- marked status
+
+## UX + Input
+
+## Keyboard
+
 - `F`: Fold
-- `C`: Check / Call
-- `R`: Raise / Bet
+- `C`: Check/Call
+- `R`: Raise/Bet
 - `Space`: Pause/Resume AI
-- `D`: Deal next hand (when hand complete and auto-deal is off)
+- `D`: Deal next hand (when complete and auto-deal off)
 
-### Action Bar
-- Primary actions: Fold, Check, Call, All-In
-- Sizing shortcuts:
-  - Preflop: `2.5 BB`, `3 BB`, `4 BB`, `5 BB`
-  - Postflop: `1/3 Pot`, `1/2 Pot`, `3/4 Pot`, `Pot`
-- Custom raise slider
-- Queued actions: Check, Check/Fold, Call
-- Utility: pause AI, sound toggle, speed selector
+## Utility Controls
 
-## Session Data and Persistence
+- pause/resume AI
+- sound on/off
+- game speed selector
+- auto-deal toggle
 
-The app stores user preferences in browser local storage (`poker-lab-prefs`):
+## Persistence
+
+Stored in localStorage (`poker-lab-prefs`):
 
 - game settings
-- commentary panel visibility
+- commentary panel open/closed
 - auto-deal preference
 - sound preference
-
-During play, it also tracks:
-
-- session totals (hands, wins, VPIP, PFR, net chips, bb/100)
-- coaching stats (score, good decisions, major mistakes, last EV delta)
-- opponent tendency summaries
-- hand history for replay/export
 
 ## Tech Stack
 
 - React 19
 - TypeScript
 - Vite 7
-- Zustand (state management)
-- Vitest (tests)
+- Zustand
+- Vitest
 - ESLint
-- Biome (configured and run in CI)
+- Biome
 
 ## Project Structure
 
 ```text
 src/
-  ai/                 # profiles, ranges, decision engine
-  commentary/         # commentary generation
-  components/         # table, controls, and right-side panels
-  engine/             # dealer flow, actions, pots, showdown
-  evaluation/         # hand ranking + draw helpers
-  hooks/              # game loop, odds calc, audio cues
-  math/               # outs, equity, pot odds, EV
-  store/              # Zustand game/session store
-  types/              # game, player, hand, odds, stats types
-  utils/              # helpers (avatars, etc.)
+  ai/                 # profiles, ranges, AI decision engine
+  commentary/         # dynamic commentary generation
+  components/
+    controls/         # Hero HUD + action shell
+    panels/           # Spotlight, Leak Detector, Commentary, Replay
+    table/            # table, seats, community cards, pot
+  engine/             # dealing, betting flow, showdown, pots
+  evaluation/         # hand ranking and draw logic
+  hooks/              # game flow, odds engine, audio cues
+  math/               # outs, equity, EV, pot odds
+  store/              # central game/session state
+  types/              # strongly typed game contracts
 ```
 
 ## Getting Started
 
-### 1. Install
-
 ```bash
 npm ci
-```
-
-### 2. Run dev server
-
-```bash
 npm run dev
 ```
 
-### 3. Open app
-
-Use the local URL shown by Vite (typically `http://localhost:5173`).
+Open the Vite URL (typically `http://localhost:5173`).
 
 ## Scripts
 
-- `npm run dev` - start local development server
-- `npm run build` - type-check and production build
-- `npm run preview` - preview built app
-- `npm run test` - run unit tests once
-- `npm run test:watch` - run tests in watch mode
-- `npm run lint` - run ESLint
-- `npm run biome` - run Biome lint over `src`
+- `npm run dev`
+- `npm run build`
+- `npm run preview`
+- `npm test`
+- `npm run test:watch`
+- `npm run lint`
+- `npm run biome`
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
+GitHub Actions runs on every push/PR:
 
 1. `npm ci`
 2. `npm run biome`
 3. `npm test`
 4. `npm run build`
 
-## Testing Scope
+## Tests
 
-Current test suites cover core evaluation and showdown behavior:
+Current suites:
 
 - `src/evaluation/__tests__/evaluator.test.ts`
 - `src/engine/__tests__/showdown.test.ts`
 
-## Exported Hand History Format
-
-Exported JSON includes:
-
-- hand number + timestamp
-- hero cards + board cards
-- pot and winners
-- per-action timeline
-- hero net chips
-- player ID-to-name mapping
-
 ## Notes
 
-- `dist/` and `node_modules/` are intentionally gitignored.
-- `screenshot.png` in repo root is used by this README.
+- `dist/` and `node_modules/` are gitignored.
+- `screenshot.png` is used by this README.

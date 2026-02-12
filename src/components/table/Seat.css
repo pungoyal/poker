@@ -111,6 +111,13 @@
   font-family: 'Courier New', monospace;
 }
 
+.seat-m-ratio {
+  margin-top: 1px;
+  font-size: 9px;
+  color: rgba(255, 222, 151, 0.9);
+  font-family: 'Courier New', monospace;
+}
+
 .seat-stack {
   color: var(--accent-green);
   font-size: 13px;
@@ -141,6 +148,35 @@
 .seat-position-other {
   color: rgba(255, 255, 255, 0.45);
   background: rgba(255, 255, 255, 0.05);
+}
+
+.seat-zone {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.7px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.seat-zone-comfort {
+  color: #81c784;
+  background: rgba(129, 199, 132, 0.14);
+}
+
+.seat-zone-pressure {
+  color: #ffb74d;
+  background: rgba(255, 183, 77, 0.14);
+}
+
+.seat-zone-push-fold {
+  color: #ff8a65;
+  background: rgba(255, 138, 101, 0.16);
+}
+
+.seat-zone-critical {
+  color: #ef5350;
+  background: rgba(239, 83, 80, 0.16);
 }
 
 /* ── Bet display ──────────────────── */

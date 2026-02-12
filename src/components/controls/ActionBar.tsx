@@ -128,6 +128,22 @@ export const ActionBar: React.FC = () => {
     return text;
   }, [isHeroTurn, hero, game.street, available]);
 
+  const tournamentPressureHint = useMemo(() => {
+    if (!isHeroTurn || !mathAnalysis?.context) return null;
+    const ctx = mathAnalysis.context;
+    const parts: string[] = [];
+    if (ctx.shortStackPushFoldHint) {
+      parts.push(ctx.shortStackPushFoldHint);
+    }
+    if (ctx.pressureStage === 'bubble' || ctx.pressureStage === 'final-table') {
+      parts.push('Payout pressure: avoid thin stack-offs without strong blocker/equity profiles.');
+    }
+    if (ctx.heroStackBb != null && ctx.averageStackBb != null && ctx.heroStackBb < ctx.averageStackBb * 0.6) {
+      parts.push('Below average stack: prioritize fold-equity spots over marginal calls.');
+    }
+    return parts.length > 0 ? parts.join(' ') : null;
+  }, [isHeroTurn, mathAnalysis]);
+
   const requiresConfirm = (action: ActionType, amount?: number): boolean => {
     if (!hero) return false;
     if (action === ActionType.AllIn) return true;
@@ -240,6 +256,9 @@ export const ActionBar: React.FC = () => {
       )}
       {preflopChartHint && (
         <div className="action-recommendation action-recommendation-chart">{preflopChartHint}</div>
+      )}
+      {tournamentPressureHint && (
+        <div className="action-recommendation action-recommendation-pressure">{tournamentPressureHint}</div>
       )}
       {isHeroTurn && (
         <div className="decision-timer-row">

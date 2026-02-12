@@ -3,10 +3,62 @@ import { useGameStore } from '../store';
 import { Street } from '../types/game';
 import { MathAnalysis } from '../types/odds';
 import { getProfile } from '../ai/profiles';
-import { handNotation, getHandTier } from '../ai/preflop-ranges';
+import { handNotation, getHandTier, HandTier } from '../ai/preflop-ranges';
+
+function stackZoneFromBb(stackBb: number): 'comfort' | 'pressure' | 'push-fold' | 'critical' {
+  if (stackBb >= 40) return 'comfort';
+  if (stackBb >= 20) return 'pressure';
+  if (stackBb >= 10) return 'push-fold';
+  return 'critical';
+}
+
+function pressureStageFromPlayers(playersRemaining: number): 'early' | 'middle' | 'late' | 'final-table' | 'bubble' {
+  if (playersRemaining <= 2) return 'bubble';
+  if (playersRemaining <= 9) return 'final-table';
+  if (playersRemaining <= 18) return 'late';
+  if (playersRemaining <= 30) return 'middle';
+  return 'early';
+}
+
+function buildPushFoldHint(params: {
+  stackBb: number;
+  handTier: HandTier;
+  position: string;
+  callAmount: number;
+  stage: 'early' | 'middle' | 'late' | 'final-table' | 'bubble';
+}): string | undefined {
+  const { stackBb, handTier, position, callAmount, stage } = params;
+  if (stackBb > 18) return undefined;
+  const isLatePosition = position === 'BTN' || position === 'CO' || position === 'HJ';
+  const unopened = callAmount === 0;
+  const bubblePressure = stage === 'bubble' || stage === 'final-table';
+
+  if (stackBb <= 10) {
+    if (unopened) {
+      if (handTier === HandTier.Premium || handTier === HandTier.Strong) return 'Push/fold zone: open-jam is standard.';
+      if (handTier === HandTier.Medium && isLatePosition) return 'Push/fold zone: profitable jam candidate in late position.';
+      return bubblePressure
+        ? 'Push/fold zone: tighten slightly under payout pressure.'
+        : 'Push/fold zone: fold weak offsuit hands and preserve fold equity.';
+    }
+    if (handTier === HandTier.Premium) return 'Facing action at <=10BB: jam over with premium strength.';
+    return 'Facing action at <=10BB: avoid dominated calls, prefer shove-or-fold.';
+  }
+
+  if (stackBb <= 18) {
+    if (unopened && (handTier === HandTier.Premium || handTier === HandTier.Strong)) {
+      return '15-18BB stack: raise/call-off plans should be pre-decided.';
+    }
+    if (bubblePressure) return 'Bubble/final-table pressure: avoid thin stack-off spots without blockers/equity.';
+    return '15-18BB stack: attack late position opens, avoid flat-calling dominated hands.';
+  }
+
+  return undefined;
+}
 
 export function useOddsCalculation() {
   const game = useGameStore(s => s.game);
+  const settings = useGameStore(s => s.settings);
   const setMathAnalysis = useGameStore(s => s.setMathAnalysis);
 
   useEffect(() => {
@@ -40,6 +92,36 @@ export function useOddsCalculation() {
           equity: null,
           ev: null,
           context: null,
+        };
+
+        const playersRemaining = game.players.filter(p => p.stack > 0).length;
+        const heroStackBb = settings.bigBlind > 0 ? hero.stack / settings.bigBlind : 0;
+        const avgStack =
+          playersRemaining > 0
+            ? game.players.filter(p => p.stack > 0).reduce((sum, p) => sum + p.stack, 0) / playersRemaining
+            : hero.stack;
+        const averageStackBb = settings.bigBlind > 0 ? avgStack / settings.bigBlind : 0;
+        const sortedStacks = game.players
+          .map(p => p.stack)
+          .sort((a, b) => b - a);
+        const heroRankByStack = sortedStacks.findIndex(s => s === hero.stack) + 1;
+        const orbitCost =
+          settings.smallBlind +
+          settings.bigBlind +
+          (settings.anteEnabled ? playersRemaining * settings.bigBlind * settings.anteBb : 0);
+        const mRatio = orbitCost > 0 ? hero.stack / orbitCost : 0;
+        const stackZone = stackZoneFromBb(heroStackBb);
+        const pressureStage = pressureStageFromPlayers(playersRemaining);
+
+        analysis.context = {
+          ...(analysis.context ?? {}),
+          heroStackBb,
+          averageStackBb,
+          playersRemaining,
+          heroRankByStack: heroRankByStack <= 0 ? 1 : heroRankByStack,
+          mRatio,
+          stackZone,
+          pressureStage,
         };
 
         // Preflop strategic guidance
@@ -106,6 +188,18 @@ export function useOddsCalculation() {
           spr: Number.isFinite(spr) ? spr : 0,
           boardTexture,
         };
+        if (game.street === Street.Preflop && analysis.context?.preflopTier) {
+          const hint = buildPushFoldHint({
+            stackBb: analysis.context.heroStackBb ?? 0,
+            handTier: getHandTier(analysis.context.handNotation ?? handNotation(holeCards)),
+            position: hero.position,
+            callAmount: costToCall,
+            stage: analysis.context.pressureStage ?? 'early',
+          });
+          if (hint) {
+            analysis.context.shortStackPushFoldHint = hint;
+          }
+        }
         if (costToCall > 0) {
           analysis.potOdds = calculatePotOdds(
             potSize,
@@ -143,5 +237,5 @@ export function useOddsCalculation() {
 
     const timer = setTimeout(calculate, 100);
     return () => clearTimeout(timer);
-  }, [game, setMathAnalysis]);
+  }, [game, setMathAnalysis, settings.anteBb, settings.anteEnabled, settings.bigBlind, settings.smallBlind]);
 }

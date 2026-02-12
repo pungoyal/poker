@@ -56,10 +56,22 @@ export const Seat: React.FC<SeatProps> = ({
   winningHand,
   isExploitTarget,
 }) => {
-  const bb = useGameStore(s => s.settings.bigBlind);
+  const settings = useGameStore(s => s.settings);
+  const bb = settings.bigBlind;
+  const players = useGameStore(s => s.game.players);
   const oppStats = useGameStore(s => s.opponentStats[player.id]);
   const isBusted = player.stack <= 0 && player.isFolded && !player.holeCards;
   const stackBB = Math.round((player.stack / bb) * 10) / 10;
+  const stackZone =
+    stackBB >= 40 ? 'comfort' :
+    stackBB >= 20 ? 'pressure' :
+    stackBB >= 10 ? 'push-fold' : 'critical';
+  const playersRemaining = players.filter(p => p.stack > 0).length;
+  const orbitCost =
+    settings.smallBlind +
+    settings.bigBlind +
+    (settings.anteEnabled ? playersRemaining * settings.bigBlind * settings.anteBb : 0);
+  const mRatio = orbitCost > 0 ? player.stack / orbitCost : 0;
   const vpip = oppStats && oppStats.hands > 0 ? (oppStats.vpipHands / oppStats.hands) * 100 : 0;
   const pfr = oppStats && oppStats.hands > 0 ? (oppStats.pfrHands / oppStats.hands) * 100 : 0;
   const af = oppStats ? (oppStats.passiveActions > 0 ? (oppStats.aggressiveActions / oppStats.passiveActions) : oppStats.aggressiveActions) : 0;
@@ -96,11 +108,19 @@ export const Seat: React.FC<SeatProps> = ({
         <div className="seat-stack-row">
           <span className="seat-stack">{stackBB} BB</span>
           {!isBusted && (
+            <span className={`seat-zone seat-zone-${stackZone}`}>
+              {stackZone === 'push-fold' ? 'P/F' : stackZone === 'critical' ? 'CRIT' : stackZone.toUpperCase()}
+            </span>
+          )}
+          {!isBusted && (
             <span className={`seat-position seat-position-${player.position === 'BTN' || player.position === 'SB' || player.position === 'BB' ? 'key' : 'other'}`}>
               {player.position}
             </span>
           )}
         </div>
+        {!isBusted && (
+          <div className="seat-m-ratio">M {mRatio.toFixed(1)}</div>
+        )}
         {!isHero && oppStats && oppStats.hands > 0 && (
           <div className="seat-stats">
             VPIP {vpip.toFixed(0)} / PFR {pfr.toFixed(0)} / AF {af.toFixed(1)}

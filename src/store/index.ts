@@ -88,6 +88,10 @@ interface GameStore {
   goodDecisions: number;
   majorMistakes: number;
   lastDecisionDeltaEv: number | null;
+  currentHandGoodDecisions: number;
+  currentHandMistakes: number;
+  currentHandWorstDeltaEv: number;
+  currentHandWorstSpot: string;
 
   // Commentary
   commentary: CommentaryEntry[];
@@ -141,6 +145,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   goodDecisions: 0,
   majorMistakes: 0,
   lastDecisionDeltaEv: null,
+  currentHandGoodDecisions: 0,
+  currentHandMistakes: 0,
+  currentHandWorstDeltaEv: 0,
+  currentHandWorstSpot: '',
 
   commentary: [],
   mathAnalysis: null,
@@ -169,6 +177,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       goodDecisions: 0,
       majorMistakes: 0,
       lastDecisionDeltaEv: null,
+      currentHandGoodDecisions: 0,
+      currentHandMistakes: 0,
+      currentHandWorstDeltaEv: 0,
+      currentHandWorstSpot: '',
     };
     set(nextState);
     persistPrefs({ ...get(), ...nextState });
@@ -212,6 +224,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       queuedAction: 'none',
       currentHandVpipByPlayer,
       currentHandPfrByPlayer,
+      currentHandGoodDecisions: 0,
+      currentHandMistakes: 0,
+      currentHandWorstDeltaEv: 0,
+      currentHandWorstSpot: '',
     });
   },
 
@@ -377,14 +393,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
       let nextScore = coachingScore;
       let nextGood = goodDecisions;
       let nextMistakes = majorMistakes;
+      const currentHandGood = get().currentHandGoodDecisions;
+      const currentHandMistakes = get().currentHandMistakes;
+      const currentHandWorstDeltaEv = get().currentHandWorstDeltaEv;
+      const currentHandWorstSpot = get().currentHandWorstSpot;
       if (bbLoss <= 0.5) {
         nextScore = Math.min(100, coachingScore + 0.4);
         nextGood += 1;
+        updates.currentHandGoodDecisions = currentHandGood + 1;
       } else if (bbLoss >= 3) {
         nextScore = Math.max(0, coachingScore - Math.min(8, bbLoss));
         nextMistakes += 1;
+        updates.currentHandMistakes = currentHandMistakes + 1;
       } else {
         nextScore = Math.max(0, coachingScore - 0.8);
+      }
+      if (delta > currentHandWorstDeltaEv) {
+        const contextText = mathAnalysis?.context?.handNotation ? ` with ${mathAnalysis.context.handNotation}` : '';
+        updates.currentHandWorstDeltaEv = Number(delta.toFixed(2));
+        updates.currentHandWorstSpot = `${game.street.toUpperCase()} ${normalizedAction.toUpperCase()}${contextText}`;
+      } else {
+        updates.currentHandWorstDeltaEv = currentHandWorstDeltaEv;
+        updates.currentHandWorstSpot = currentHandWorstSpot;
       }
       updates.coachingScore = Number(nextScore.toFixed(1));
       updates.goodDecisions = nextGood;
@@ -409,6 +439,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       opponentStats,
       currentHandVpipByPlayer,
       currentHandPfrByPlayer,
+      currentHandGoodDecisions,
+      currentHandMistakes,
+      currentHandWorstDeltaEv,
+      currentHandWorstSpot,
     } = get();
     const finalizeHand = (completed: GameState) => {
       const heroAfter = completed.players.find(p => p.isHuman)?.stack ?? 0;
@@ -447,6 +481,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }),
         heroNetChips: heroAfter - heroStackAtHandStart,
         actions: completed.actions,
+        coach: {
+          goodDecisions: currentHandGoodDecisions,
+          mistakes: currentHandMistakes,
+          worstDeltaEv: Number(currentHandWorstDeltaEv.toFixed(2)),
+          worstSpot: currentHandWorstSpot || undefined,
+        },
       };
       const nextOpponentStats = { ...opponentStats };
       for (const p of completed.players) {
@@ -472,6 +512,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         currentHandPFR: false,
         currentHandVpipByPlayer: {},
         currentHandPfrByPlayer: {},
+        currentHandGoodDecisions: 0,
+        currentHandMistakes: 0,
+        currentHandWorstDeltaEv: 0,
+        currentHandWorstSpot: '',
         heroStackAtHandStart: heroAfter,
         handHistory: [...handHistory, handEntry],
         opponentStats: nextOpponentStats,
@@ -559,6 +603,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       goodDecisions: 0,
       majorMistakes: 0,
       lastDecisionDeltaEv: null,
+      currentHandGoodDecisions: 0,
+      currentHandMistakes: 0,
+      currentHandWorstDeltaEv: 0,
+      currentHandWorstSpot: '',
       rebuyCount: 0,
       isPaused: false,
       decisionClockSec: 12,

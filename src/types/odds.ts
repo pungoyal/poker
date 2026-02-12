@@ -43,6 +43,14 @@ export interface StrategicContextInfo {
   handNotation?: string;
   boardTexture?: string;
   spr?: number;
+  heroStackBb?: number;
+  averageStackBb?: number;
+  playersRemaining?: number;
+  heroRankByStack?: number;
+  mRatio?: number;
+  stackZone?: 'comfort' | 'pressure' | 'push-fold' | 'critical';
+  pressureStage?: 'early' | 'middle' | 'late' | 'final-table' | 'bubble';
+  shortStackPushFoldHint?: string;
 }
 
 export interface MathAnalysis {

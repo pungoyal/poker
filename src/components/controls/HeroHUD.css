@@ -43,6 +43,30 @@
   border: 1px solid rgba(255, 215, 0, 0.1);
 }
 
+.hud-cell-stack-zone {
+  min-width: 180px;
+}
+
+.hud-zone-comfort {
+  background: rgba(46, 125, 50, 0.16);
+  border: 1px solid rgba(102, 187, 106, 0.3);
+}
+
+.hud-zone-pressure {
+  background: rgba(245, 124, 0, 0.14);
+  border: 1px solid rgba(255, 167, 38, 0.3);
+}
+
+.hud-zone-push-fold {
+  background: rgba(239, 108, 0, 0.16);
+  border: 1px solid rgba(255, 138, 101, 0.35);
+}
+
+.hud-zone-critical {
+  background: rgba(183, 28, 28, 0.18);
+  border: 1px solid rgba(239, 83, 80, 0.4);
+}
+
 .hud-label {
   font-size: 9px;
   font-weight: 600;

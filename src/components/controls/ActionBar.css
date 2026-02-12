@@ -61,6 +61,10 @@
   color: #b4f1c7;
 }
 
+.action-recommendation-pressure {
+  color: #ffd58a;
+}
+
 .decision-timer-row {
   display: flex;
   align-items: center;

@@ -89,6 +89,16 @@ export const HandReplayPanel: React.FC = () => {
             </span>
           </div>
 
+          <div className="replay-coach">
+            <span className="replay-coach-title">Coach</span>
+            <span className="replay-coach-line">
+              Good {selected.coach.goodDecisions} | Mistakes {selected.coach.mistakes} | Worst ΔEV {selected.coach.worstDeltaEv.toFixed(1)}
+            </span>
+            {selected.coach.worstSpot && (
+              <span className="replay-coach-line replay-coach-spot">Leak spot: {selected.coach.worstSpot}</span>
+            )}
+          </div>
+
           <div className="replay-stepper">
             <button onClick={() => setStep(0)}>Start</button>
             <button onClick={() => setStep(s => Math.max(0, s - 1))}>Prev</button>

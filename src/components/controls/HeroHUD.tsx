@@ -12,6 +12,13 @@ const ACTION_LABELS: Record<string, string> = {
   [ActionType.AllIn]: 'All-In',
 };
 
+const STACK_ZONE_LABELS = {
+  comfort: 'Comfort',
+  pressure: 'Pressure',
+  'push-fold': 'Push/Fold',
+  critical: 'Critical',
+} as const;
+
 export const HeroHUD: React.FC = () => {
   const analysis = useGameStore(s => s.mathAnalysis);
   const game = useGameStore(s => s.game);
@@ -29,6 +36,21 @@ export const HeroHUD: React.FC = () => {
   const vpip = stats.handsPlayed > 0 ? (stats.vpipHands / stats.handsPlayed) * 100 : 0;
   const pfr = stats.handsPlayed > 0 ? (stats.pfrHands / stats.handsPlayed) * 100 : 0;
   const bbPer100 = stats.handsPlayed > 0 ? (stats.netChips / bb) * (100 / stats.handsPlayed) : 0;
+  const ctx = analysis?.context;
+  const stackZone =
+    ctx?.stackZone === 'comfort' ||
+    ctx?.stackZone === 'pressure' ||
+    ctx?.stackZone === 'push-fold' ||
+    ctx?.stackZone === 'critical'
+      ? ctx.stackZone
+      : null;
+  const showTournamentMetrics =
+    ctx?.heroStackBb != null &&
+    ctx.averageStackBb != null &&
+    ctx.playersRemaining != null &&
+    ctx.heroRankByStack != null &&
+    ctx.mRatio != null &&
+    stackZone != null;
   return (
     <div className="hero-hud">
       <div className="hud-cell hud-cell-session">
@@ -52,6 +74,21 @@ export const HeroHUD: React.FC = () => {
           </span>
         )}
       </div>
+
+      {showTournamentMetrics && ctx && (
+        <div className={`hud-cell hud-cell-stack-zone hud-zone-${ctx.stackZone}`}>
+          <span className="hud-label">Tournament Pressure</span>
+          <span className="hud-value">
+            {STACK_ZONE_LABELS[stackZone]}
+          </span>
+          <span className="hud-detail">
+            {ctx.heroStackBb!.toFixed(1)}BB ({ctx.heroRankByStack}/{ctx.playersRemaining})
+          </span>
+          <span className="hud-detail">
+            Avg {ctx.averageStackBb!.toFixed(1)}BB | M {ctx.mRatio!.toFixed(1)}
+          </span>
+        </div>
+      )}
 
       {/* Hand Strength */}
       {analysis?.handStrength && (

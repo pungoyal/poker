@@ -72,6 +72,33 @@
   color: #ef5350;
 }
 
+.replay-coach {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.replay-coach-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: #9fd1ff;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.replay-coach-line {
+  font-size: 11px;
+  color: #d5e8ff;
+}
+
+.replay-coach-spot {
+  color: #ffd58a;
+}
+
 .replay-stepper {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

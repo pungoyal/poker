@@ -25,10 +25,6 @@ export function useGameFlow() {
   const setAIThinking = useGameStore(s => s.setAIThinking);
   const isPaused = useGameStore(s => s.isPaused);
   const togglePause = useGameStore(s => s.togglePause);
-  const decisionClockSec = useGameStore(s => s.decisionClockSec);
-  const timeBankSec = useGameStore(s => s.timeBankSec);
-  const setDecisionClockSec = useGameStore(s => s.setDecisionClockSec);
-  const setTimeBankSec = useGameStore(s => s.setTimeBankSec);
   const queuedAction = useGameStore(s => s.queuedAction);
   const setQueuedAction = useGameStore(s => s.setQueuedAction);
   const sessionStats = useGameStore(s => s.sessionStats);
@@ -134,7 +130,7 @@ export function useGameFlow() {
     mathAnalysis,
   ]);
 
-  // Hero decision timer + queued actions
+  // Hero queued actions (untimed hero decisions)
   useEffect(() => {
     if (game.isHandComplete || game.handNumber === 0 || isPaused) return;
 
@@ -146,7 +142,6 @@ export function useGameFlow() {
     const decisionKey = `${game.handNumber}-${game.street}-${game.actions.length}`;
     if (lastHeroDecisionKeyRef.current !== decisionKey) {
       lastHeroDecisionKeyRef.current = decisionKey;
-      setDecisionClockSec(12);
 
       // Execute queued pre-action immediately when legal.
       const available = getAvailableActions(game);
@@ -170,37 +165,7 @@ export function useGameFlow() {
         return;
       }
     }
-
-    const timer = setTimeout(() => {
-      if (decisionClockSec > 0) {
-        setDecisionClockSec(decisionClockSec - 1);
-        return;
-      }
-      if (timeBankSec > 0) {
-        setTimeBankSec(timeBankSec - 1);
-        return;
-      }
-
-      const available = getAvailableActions(game);
-      if (available.canCheck) {
-        playerAction(ActionType.Check);
-      } else if (available.canFold) {
-        playerAction(ActionType.Fold);
-      } else if (available.canCall) {
-        playerAction(ActionType.Call, available.callAmount);
-      }
-      addCommentary({
-        id: `timeout-${Date.now()}`,
-        type: CommentaryType.Situation,
-        street: game.street,
-        text: 'Time expired. Auto-action selected.',
-        timestamp: Date.now(),
-      });
-    }, 1000);
-
-    return () => clearTimeout(timer);
   }, [
-    addCommentary,
     game,
     game.activePlayerIndex,
     game.actions.length,
@@ -209,11 +174,7 @@ export function useGameFlow() {
     game.street,
     isPaused,
     playerAction,
-    decisionClockSec,
-    setDecisionClockSec,
     setQueuedAction,
-    setTimeBankSec,
-    timeBankSec,
     queuedAction,
   ]);
 

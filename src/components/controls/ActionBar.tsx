@@ -20,8 +20,6 @@ export const ActionBar: React.FC = () => {
   const togglePause = useGameStore(s => s.togglePause);
   const soundEnabled = useGameStore(s => s.soundEnabled);
   const toggleSound = useGameStore(s => s.toggleSound);
-  const decisionClockSec = useGameStore(s => s.decisionClockSec);
-  const timeBankSec = useGameStore(s => s.timeBankSec);
   const queuedAction = useGameStore(s => s.queuedAction);
   const setQueuedAction = useGameStore(s => s.setQueuedAction);
 
@@ -267,12 +265,7 @@ export const ActionBar: React.FC = () => {
           <div className="control-slot-left">
             {isHeroTurn ? (
               <div className="decision-timer-row">
-                <span className={`decision-clock ${decisionClockSec <= 5 ? 'decision-clock-low' : ''}`}>
-                  Decision: {decisionClockSec}s
-                </span>
-                <span className={`time-bank ${timeBankSec <= 10 ? 'time-bank-low' : ''}`}>
-                  Time Bank: {timeBankSec}s
-                </span>
+                <span className="decision-clock">No timer</span>
               </div>
             ) : (
               <div className="control-placeholder" />

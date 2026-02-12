@@ -1,0 +1,57 @@
+.rival-panel {
+  border-top: 1px solid var(--surface-border);
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.rival-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.rival-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffcf66;
+  box-shadow: 0 0 10px rgba(255, 207, 102, 0.6);
+}
+
+.rival-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.rival-body {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rival-name {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.rival-stats {
+  font-size: 11px;
+  color: #b8daf8;
+  font-family: 'Courier New', monospace;
+}
+
+.rival-advice {
+  font-size: 12px;
+  color: #d9f3df;
+  background: rgba(102, 187, 106, 0.1);
+  border: 1px solid rgba(102, 187, 106, 0.25);
+  border-radius: 6px;
+  padding: 7px 8px;
+}

@@ -1,0 +1,85 @@
+.pot-display {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+}
+
+.pot-display-pulse .pot-amount {
+  animation: potPulse 0.26s ease-out;
+}
+
+.pot-display-pulse .pot-chip {
+  animation: chipBounce 0.24s ease-out;
+}
+
+@keyframes potPulse {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+@keyframes chipBounce {
+  0% { transform: translateY(0); }
+  45% { transform: translateY(-4px); }
+  100% { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pot-display-pulse .pot-amount,
+  .pot-display-pulse .pot-chip {
+    animation: none !important;
+  }
+}
+
+.pot-chips {
+  display: flex;
+  align-items: flex-end;
+  height: 18px;
+  gap: 0;
+}
+
+.pot-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffe082, #ffc107, #e6a100);
+  border: 1.5px solid #b8860b;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  margin-left: -4px;
+}
+
+.pot-chip:first-child {
+  margin-left: 0;
+}
+
+.pot-amount {
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--gold);
+  font-size: 15px;
+  font-weight: 700;
+  padding: 4px 18px;
+  border-radius: 12px;
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  letter-spacing: -0.3px;
+  border: 1px solid rgba(255, 215, 0, 0.15);
+}
+
+.side-pots {
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+  gap: 1px;
+}
+
+.side-pot {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  display: block;
+}

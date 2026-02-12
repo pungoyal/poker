@@ -1,0 +1,132 @@
+.replay-panel {
+  border-top: 1px solid var(--surface-border);
+  background: rgba(0, 0, 0, 0.16);
+  flex-shrink: 0;
+}
+
+.replay-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.replay-header h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.replay-icon,
+.replay-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.replay-content {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.replay-controls-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.replay-controls-top label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.replay-controls-top select {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.replay-net {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.replay-net-plus {
+  color: #66bb6a;
+}
+
+.replay-net-minus {
+  color: #ef5350;
+}
+
+.replay-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.replay-stepper button {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 0;
+  cursor: pointer;
+}
+
+.replay-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.replay-last-line {
+  font-size: 12px;
+  color: #d6f5df;
+  background: rgba(102, 187, 106, 0.08);
+  border: 1px solid rgba(102, 187, 106, 0.18);
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+
+.replay-log {
+  max-height: 190px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replay-line {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+
+.replay-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+@media (max-width: 900px) {
+  .replay-log {
+    max-height: 140px;
+  }
+}

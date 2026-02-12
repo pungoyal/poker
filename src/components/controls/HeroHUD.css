@@ -1,0 +1,170 @@
+/* ── Hero HUD: compact math strip ── */
+.hero-hud {
+  display: flex;
+  gap: 2px;
+  padding: 6px 12px;
+  background: rgba(10, 10, 20, 0.95);
+  border-top: 1px solid var(--surface-border);
+  flex-shrink: 0;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hud-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 16px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  min-width: 80px;
+  gap: 1px;
+}
+
+.hud-cell-hand {
+  background: rgba(139, 92, 246, 0.06);
+  border: 1px solid rgba(139, 92, 246, 0.12);
+}
+
+.hud-cell-session {
+  min-width: 210px;
+  background: rgba(0, 200, 130, 0.08);
+  border: 1px solid rgba(0, 200, 130, 0.18);
+}
+
+.hud-hand-category {
+  color: #c4b5fd;
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.hud-cell-action {
+  background: rgba(255, 215, 0, 0.05);
+  border: 1px solid rgba(255, 215, 0, 0.1);
+}
+
+.hud-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.hud-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+  line-height: 1.2;
+}
+
+.hud-equity {
+  color: var(--accent-blue);
+}
+
+.hud-best-action {
+  color: var(--gold);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.hud-detail {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-detail-session {
+  max-width: 230px;
+}
+
+.hud-verdict {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.hud-ev {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+}
+
+.hud-good {
+  color: #66bb6a;
+}
+
+.hud-bad {
+  color: #ef5350;
+}
+
+/* ── Tiny equity bar ──────────────── */
+.hud-equity-bar {
+  width: 60px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.hud-equity-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ef5350, #ff9800 40%, #66bb6a 70%, #43a047);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+@media (max-width: 1200px) {
+  .hero-hud {
+    padding: 5px 8px;
+    gap: 4px;
+  }
+
+  .hud-cell {
+    padding: 4px 10px;
+    min-width: 70px;
+  }
+
+  .hud-cell-session {
+    min-width: 185px;
+  }
+
+  .hud-value {
+    font-size: 15px;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero-hud {
+    justify-content: flex-start;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+
+  .hud-cell {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-height: 760px) {
+  .hero-hud {
+    padding: 4px 6px;
+    gap: 2px;
+  }
+
+  .hud-cell {
+    padding: 3px 8px;
+  }
+
+  .hud-label {
+    font-size: 8px;
+  }
+
+  .hud-value {
+    font-size: 13px;
+  }
+}

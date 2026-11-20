@@ -28,6 +28,11 @@ impl Card {
         Card(index)
     }
 
+    /// Position in an ordered deck, 0 to 51.
+    pub fn index(self) -> u8 {
+        self.0
+    }
+
     pub fn rank(self) -> u8 {
         self.0 / 4
     }

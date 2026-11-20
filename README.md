@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>A heads-up No-Limit Hold'em trainer for the terminal.</strong><br>
-  Play against a solver-backed opponent and get every decision priced in big blinds.
+  Play, see your cards and odds on every street, and get your decisions reviewed in big blinds.
 </p>
 
 <p align="center">
@@ -15,8 +15,8 @@
 
 The goal is a near-unbeatable opponent plus a coach that tells you what each of
 your mistakes cost and why. Today the project ships the foundation: a complete,
-deterministic rules engine, a fast hand evaluator, replayable hand histories and
-a playable command-line client.
+deterministic rules engine, a fast hand evaluator, replayable hand histories, a
+playable command-line client and a first version of the coach.
 
 ## Features
 
@@ -26,8 +26,11 @@ a playable command-line client.
   deals the same cards, so any hand can be replayed and any bug reproduced.
 - **Verified hand histories.** Finished hands are appended to a JSON Lines file
   and `poker replay` re-runs each one through the engine to check it.
-- **Pleasant to play.** Colour cards, amounts in big blinds, bets by size
-  (`b 2.5`) or by pot fraction (`b 75%`).
+- **A coach at the table.** Pot odds before you decide, and a review after:
+  calls and folds priced in big blinds, bets explained as value or bluff.
+- **Pleasant to play.** The board and your hand drawn as cards on every street,
+  your hand named in plain English with its draws, amounts in big blinds, bets
+  by size (`b 2.5`) or by pot fraction (`b 75%`).
 - **Runs anywhere.** A single binary, or one `docker compose` command.
 
 ## Quick start
@@ -66,12 +69,37 @@ Options:
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--bot <random\|station>` | `random` | Opponent: a random bot, or a calling station that never folds |
+| `--coach <off\|after\|full>` | `after` | Coach output: none, a review after each decision, or also your equity before you decide |
 | `--seed <n>` | time-based | Seed for cards and the bot; the same seed deals the same session |
 | `--stack <bb>` | `100` | Starting stack in big blinds, reset every hand |
 | `--hands <n>` | unlimited | Stop after this many hands |
 | `--log <file>` | `hands.jsonl` | File that finished hands are appended to |
 
 `poker replay [file]` prints the stored hands and verifies each one.
+
+### The coach
+
+```
+── Flop · pot 5bb ──
+   Board               Your hand
+  ┌────┐┌────┐┌────┐  ┌────┐┌────┐
+  │ 9♥ ││ 8♦ ││ 3♣ │  │ K♦ ││ 3♦ │
+  └────┘└────┘└────┘  └────┘└────┘
+  You have a pair of threes.
+```
+
+Facing a bet, you see the pot odds first. After you act, the coach reviews the
+decision:
+
+```
+  Pot odds: call 0.5bb to win 1.5bb → you need to win more than 25% of the time.
+  Coach · Inaccuracy: You needed 25% equity to call 0.5bb into 1.5bb and had about 45%. Folding gave up about 0.4bb.
+```
+
+Two simplifications apply until the solver-backed bot lands. Equity is measured
+against a random hand, which is exact for the placeholder bots because their
+play ignores their cards. Prices assume no further betting, so they are
+estimates before the river.
 
 With Docker, hand histories live in the `hands` volume and survive between runs:
 
@@ -85,8 +113,9 @@ docker compose run --rm poker replay
 | Step | What | State |
 | --- | --- | --- |
 | 1 | Rules engine, hand evaluator, hand records, playable CLI against placeholder bots | ✅ done |
+| 1b | Basic coach: hand reading, pot odds, equity against a random hand, priced calls and folds | ✅ done |
 | 2 | Solver-backed bot: preflop ranges, live postflop solving | 🚧 next |
-| 3 | Coach: the cost of each decision in big blinds, with plain-language explanations | planned |
+| 3 | Full coach: exact cost of every decision from the solver, with plain-language explanations | planned |
 | 4 | Leak tracking across sessions, reviews and drills | planned |
 
 Ideas and help on any of these are welcome: see [Contributing](#contributing).
@@ -102,6 +131,7 @@ command-line client on top.
 | [`eval`](src/eval.rs) | Best five-card hand out of five to seven cards |
 | [`game`](src/game.rs) | Betting rules for one hand as a deterministic state machine |
 | [`bot`](src/bot.rs) | The `Bot` trait and the placeholder bots |
+| [`coach`](src/coach.rs) | Hand descriptions, equity, pot odds and decision reviews |
 | [`history`](src/history.rs) | Hand records, storage and replay verification |
 | [`main`](src/main.rs) | The terminal client |
 

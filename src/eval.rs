@@ -15,22 +15,6 @@ pub enum Category {
     StraightFlush,
 }
 
-impl Category {
-    pub fn name(self) -> &'static str {
-        match self {
-            Category::HighCard => "high card",
-            Category::Pair => "a pair",
-            Category::TwoPair => "two pair",
-            Category::Trips => "three of a kind",
-            Category::Straight => "a straight",
-            Category::Flush => "a flush",
-            Category::FullHouse => "a full house",
-            Category::Quads => "four of a kind",
-            Category::StraightFlush => "a straight flush",
-        }
-    }
-}
-
 /// Strength of a hand. A higher value beats a lower one; equal values tie.
 /// Layout: category in the high bits, then five 4-bit ranks, most significant first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,6 +28,30 @@ impl HandRank {
             value = (value << 4) | ranks.get(i).copied().unwrap_or(0) as u32;
         }
         HandRank(value)
+    }
+
+    /// The ranks that define the hand, most significant first: for a pair,
+    /// the pair's rank and then the kickers. Unused slots are zero.
+    pub fn ranks(self) -> [u8; 5] {
+        std::array::from_fn(|i| ((self.0 >> (16 - 4 * i)) & 0xF) as u8)
+    }
+
+    /// Plain-English name, e.g. "a pair of fives".
+    pub fn describe(self) -> String {
+        let r = self.ranks();
+        let (one, many) = (|i: usize| rank_name(r[i]), |i: usize| rank_plural(r[i]));
+        match self.category() {
+            Category::HighCard => format!("{} high", one(0)),
+            Category::Pair => format!("a pair of {}", many(0)),
+            Category::TwoPair => format!("two pair, {} and {}", many(0), many(1)),
+            Category::Trips => format!("three {}", many(0)),
+            Category::Straight => format!("a straight, {} high", one(0)),
+            Category::Flush => format!("a flush, {} high", one(0)),
+            Category::FullHouse => format!("a full house, {} full of {}", many(0), many(1)),
+            Category::Quads => format!("four {}", many(0)),
+            Category::StraightFlush if r[0] == 12 => "a royal flush".to_string(),
+            Category::StraightFlush => format!("a straight flush, {} high", one(0)),
+        }
     }
 
     pub fn category(self) -> Category {
@@ -61,9 +69,29 @@ impl HandRank {
     }
 }
 
+const RANK_NAMES: [&str; 13] = [
+    "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "jack", "queen",
+    "king", "ace",
+];
+
+/// "ace", "king", ... for a rank where 0 is a two and 12 an ace.
+pub fn rank_name(rank: u8) -> &'static str {
+    RANK_NAMES[rank as usize]
+}
+
+/// "aces", "kings", ..., "sixes".
+pub fn rank_plural(rank: u8) -> String {
+    let name = rank_name(rank);
+    if name == "six" {
+        "sixes".to_string()
+    } else {
+        format!("{name}s")
+    }
+}
+
 /// Highest card of the best straight in a 13-bit rank mask, if any.
 /// The wheel (A-2-3-4-5) counts as five-high.
-fn straight_high(mask: u16) -> Option<u8> {
+pub(crate) fn straight_high(mask: u16) -> Option<u8> {
     for high in (4..=12u8).rev() {
         let window = 0b11111 << (high - 4);
         if mask & window == window {
@@ -190,6 +218,22 @@ mod tests {
             );
             previous = Some(value);
         }
+    }
+
+    #[test]
+    fn descriptions() {
+        assert_eq!(rank("Ah Kd 9c 7s 3h").describe(), "ace high");
+        assert_eq!(rank("6h 6d 9c 7s 3h").describe(), "a pair of sixes");
+        assert_eq!(
+            rank("Kh Kd 3c 3s 4h").describe(),
+            "two pair, kings and threes"
+        );
+        assert_eq!(rank("Ah 2d 3c 4s 5h").describe(), "a straight, five high");
+        assert_eq!(
+            rank("2h 2d 2c 3s 3h").describe(),
+            "a full house, twos full of threes"
+        );
+        assert_eq!(rank("Th Jh Qh Kh Ah").describe(), "a royal flush");
     }
 
     #[test]

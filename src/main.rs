@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use poker::bot::{Bot, CallingStation, RandomBot};
 use poker::cards::{Card, Rng, shuffled_deck};
+use poker::coach::{self, Feedback, Grade, Spot};
 use poker::game::{Action, Config, HandState, Legal, Street};
 use poker::history::{self, HandRecord};
+use std::collections::HashMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,6 +32,10 @@ struct PlayArgs {
     /// Opponent to play against
     #[arg(long, value_enum, default_value_t)]
     bot: BotKind,
+    /// How much the coach says: nothing, a review after each decision,
+    /// or also your equity before you decide
+    #[arg(long, value_enum, default_value_t)]
+    coach: CoachMode,
     /// Seed for the cards and the bot; the same seed deals the same session
     #[arg(long)]
     seed: Option<u64>,
@@ -49,6 +55,14 @@ enum BotKind {
     #[default]
     Random,
     Station,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, ValueEnum)]
+enum CoachMode {
+    Off,
+    #[default]
+    After,
+    Full,
 }
 
 const HERO: usize = 0;
@@ -82,26 +96,53 @@ struct Table {
 
 impl Table {
     fn bb(&self, chips: u32) -> String {
-        self.bb_f(chips as f64)
+        coach::fmt_bb(chips as f64, self.big_blind)
     }
 
     fn bb_signed(&self, chips: i64) -> String {
         let sign = if chips > 0 { "+" } else { "" };
-        format!("{sign}{}", self.bb_f(chips as f64))
+        format!("{sign}{}", coach::fmt_bb(chips as f64, self.big_blind))
     }
 
-    fn bb_f(&self, chips: f64) -> String {
-        let text = format!("{:.2}", chips / self.big_blind as f64);
-        let text = text.trim_end_matches('0').trim_end_matches('.');
-        format!("{text}bb")
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
     }
 
+    fn dim(&self, text: &str) -> String {
+        self.paint("2", text)
+    }
+
+    /// Cards as inline text, e.g. "A♣ 4♥".
     fn cards(&self, cards: &[Card]) -> String {
         cards
             .iter()
             .map(|c| c.pretty(self.color))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Labelled groups of cards drawn side by side as small boxes.
+    fn card_art(&self, groups: &[(&str, &[Card])]) -> String {
+        let mut rows = [String::new(), String::new(), String::new(), String::new()];
+        for (label, cards) in groups.iter().filter(|(_, cards)| !cards.is_empty()) {
+            let width = cards.len() * 6;
+            rows[0] += &format!(" {}  ", self.dim(&format!("{label:<w$}", w = width - 1)));
+            for (row, text) in rows.iter_mut().enumerate().skip(1) {
+                for card in *cards {
+                    *text += &match row {
+                        1 => "┌────┐".to_string(),
+                        2 => format!("│ {} │", card.pretty(self.color)),
+                        _ => "└────┘".to_string(),
+                    };
+                }
+                *text += "  ";
+            }
+        }
+        rows.map(|row| format!("  {}", row.trim_end())).join("\n")
     }
 
     fn describe(
@@ -130,6 +171,36 @@ impl Table {
             }
         }
     }
+
+    /// Street header, the board and the player's hand with what it makes.
+    fn show_street(&self, state: &HandState) {
+        let title = format!(
+            "── {} · pot {} ──",
+            state.street().name(),
+            self.bb(state.pot())
+        );
+        println!("\n{}", self.paint("1", &title));
+        let hole = state.hole(HERO);
+        println!(
+            "{}",
+            self.card_art(&[("Board", state.board()), ("Your hand", &hole)])
+        );
+        println!(
+            "  You have {}.",
+            self.paint("1", &coach::describe_hand(hole, state.board()))
+        );
+    }
+
+    fn show_feedback(&self, feedback: &Feedback) {
+        let code = match feedback.grade {
+            Grade::Good => "32",
+            Grade::Close | Grade::Note => "36",
+            Grade::Inaccuracy => "33",
+            Grade::Mistake | Grade::Blunder => "1;31",
+        };
+        let label = self.paint(code, &format!("Coach · {}:", feedback.grade.label()));
+        println!("  {label} {}", feedback.text);
+    }
 }
 
 fn play(args: PlayArgs) -> io::Result<()> {
@@ -154,6 +225,7 @@ fn play(args: PlayArgs) -> io::Result<()> {
         BotKind::Random => Box::new(RandomBot::new(seed ^ 0xB07)),
         BotKind::Station => Box::new(CallingStation),
     };
+    let coaching = args.coach != CoachMode::Off;
     let stdin = io::stdin();
     let mut input = stdin.lock();
 
@@ -162,13 +234,25 @@ fn play(args: PlayArgs) -> io::Result<()> {
         bot.name()
     );
     println!(
-        "Stacks reset to {} every hand. Type h for help.",
+        "Both stacks start every hand at {}, so each hand is the same situation; \
+         your running result is tracked separately. Type h for help.",
         table.bb(cfg.stack)
     );
+    if coaching {
+        println!(
+            "{}",
+            table.dim(
+                "Coach: equity is your chance to win against a random hand, which is what this bot \
+                 holds.\nPrices assume no further betting, so they are estimates before the river."
+            )
+        );
+    }
 
     let mut total: i64 = 0;
     let mut finished = 0u64;
     let mut hand_no = 0u64;
+    let mut grades: HashMap<Grade, u32> = HashMap::new();
+    let mut total_loss = 0.0;
     'session: while args.hands.is_none_or(|limit| hand_no < limit) {
         hand_no += 1;
         let hand_seed = Rng::new(seed.wrapping_add(hand_no)).next_u64();
@@ -176,64 +260,99 @@ fn play(args: PlayArgs) -> io::Result<()> {
         let mut state = HandState::deal(cfg, button, &shuffled_deck(hand_seed));
 
         let position = if button == HERO {
-            "the button (small blind)"
+            "you are the button: small blind, first to act now, last to act after the flop"
         } else {
-            "the big blind"
+            "you are the big blind: last to act now, first to act after the flop"
         };
-        println!(
-            "\n━━ Hand {hand_no} ━━ you are {position} · session {}",
-            table.bb_signed(total)
-        );
-        println!("Your hand: {}", table.cards(&state.hole(HERO)));
+        let title = format!("━━ Hand {hand_no} ━━ session {}", table.bb_signed(total));
+        println!("\n{}\n{position}", table.paint("1", &title));
+        table.show_street(&state);
 
-        let mut shown_street = Street::Preflop;
+        // Equity only changes when the board does, so compute it once per street.
+        let mut equity: Option<(Street, f64)> = None;
         while let Some(seat) = state.to_act() {
             let legal = state.legal().unwrap();
             let before = state.clone();
-            let (who, action) = if seat == HERO {
-                match prompt(&mut input, &table, &state, legal)? {
-                    Some(action) => ("You", action),
-                    None => break 'session,
+            if seat == HERO {
+                let hole = state.hole(HERO);
+                let spot = coaching.then(|| {
+                    let known = equity.filter(|(street, _)| *street == state.street());
+                    let (_, value) = known.unwrap_or_else(|| {
+                        (state.street(), coach::equity_vs_random(hole, state.board()))
+                    });
+                    equity = Some((state.street(), value));
+                    Spot {
+                        big_blind: cfg.big_blind,
+                        pot: state.pot(),
+                        to_call: legal.to_call,
+                        street_commit: state.street_commit(HERO),
+                        equity: value,
+                    }
+                });
+                if let Some(spot) = &spot {
+                    if legal.to_call > 0 {
+                        println!(
+                            "  Pot odds: call {} to win {} → you need to win more than {:.0}% of the time.",
+                            table.bb(legal.to_call),
+                            table.bb(state.pot()),
+                            coach::pot_odds(state.pot(), legal.to_call) * 100.0
+                        );
+                    }
+                    if args.coach == CoachMode::Full {
+                        println!(
+                            "  Your equity against a random hand: {:.0}%.",
+                            spot.equity * 100.0
+                        );
+                    }
+                }
+                let Some(action) = prompt(&mut input, &table, &state, legal)? else {
+                    break 'session;
+                };
+                state.apply(action).map_err(io::Error::other)?;
+                println!("{}", table.describe("You", action, legal, &before));
+                if let Some(spot) = &spot {
+                    let feedback = coach::review(spot, action);
+                    table.show_feedback(&feedback);
+                    *grades.entry(feedback.grade).or_default() += 1;
+                    total_loss += feedback.loss;
                 }
             } else {
-                ("Bot", bot.act(&state, seat))
-            };
-            state.apply(action).map_err(io::Error::other)?;
-            if seat != HERO {
-                println!("{}", table.describe(who, action, legal, &before));
+                let action = bot.act(&state, seat);
+                state.apply(action).map_err(io::Error::other)?;
+                println!("{}", table.describe("Bot", action, legal, &before));
             }
 
-            if state.board().len() > before.board().len() {
-                if state.outcome().is_some() && state.street() != Street::River {
-                    println!("All-in. Board runs out: {}", table.cards(state.board()));
-                } else if state.street() != shown_street {
-                    shown_street = state.street();
-                    println!(
-                        "\n{}: {}  (pot {})",
-                        shown_street.name(),
-                        table.cards(state.board()),
-                        table.bb(state.pot())
-                    );
-                }
+            if state.outcome().is_none() && state.street() != before.street() {
+                table.show_street(&state);
             }
         }
 
         let outcome = state.outcome().unwrap();
         if outcome.showdown {
-            for (seat, who) in [(HERO, "You show"), (1 - HERO, "Bot shows")] {
-                println!(
-                    "{who} {}: {}",
-                    table.cards(&state.hole(seat)),
-                    state.showdown_rank(seat).category().name()
-                );
+            if state.street() != Street::River {
+                println!("\nAll-in: the rest of the board is dealt.");
             }
+            let (mine, theirs) = (state.hole(HERO), state.hole(1 - HERO));
+            println!(
+                "\n{}\n{}",
+                table.paint("1", "── Showdown ──"),
+                table.card_art(&[("Board", state.board()), ("You", &mine), ("Bot", &theirs)])
+            );
+            println!("  You: {}", state.showdown_rank(HERO).describe());
+            println!("  Bot: {}", state.showdown_rank(1 - HERO).describe());
         }
         let result = match outcome.winner {
-            None => "Split pot.".to_string(),
-            Some(HERO) => format!("You win {}.", table.bb(outcome.net[HERO] as u32)),
-            Some(_) => format!(
-                "Bot wins; you lose {}.",
-                table.bb(outcome.net[1 - HERO] as u32)
+            None => table.paint("1", "Split pot."),
+            Some(HERO) => table.paint(
+                "1;32",
+                &format!("You win {}.", table.bb(outcome.net[HERO] as u32)),
+            ),
+            Some(_) => table.paint(
+                "1;31",
+                &format!(
+                    "Bot wins; you lose {}.",
+                    table.bb(outcome.net[1 - HERO] as u32)
+                ),
             ),
         };
         println!("{result}");
@@ -248,6 +367,17 @@ fn play(args: PlayArgs) -> io::Result<()> {
         "\nSession over: {} across {finished} finished hand(s).",
         table.bb_signed(total)
     );
+    if coaching {
+        let count = |grade: Grade| grades.get(&grade).copied().unwrap_or(0);
+        let reviewed: u32 = grades.values().sum();
+        println!(
+            "Coach: {reviewed} decision(s) reviewed · inaccuracies {} · mistakes {} · blunders {} · about {} given up.",
+            count(Grade::Inaccuracy),
+            count(Grade::Mistake),
+            count(Grade::Blunder),
+            coach::fmt_bb(total_loss, cfg.big_blind)
+        );
+    }
     Ok(())
 }
 
@@ -279,17 +409,25 @@ fn prompt(
         }
     }
     loop {
-        print!(
-            "Pot {} · your stack {} · {} > ",
-            table.bb(state.pot()),
-            table.bb(state.stack(HERO)),
-            options.join("  ")
+        println!(
+            "  {}",
+            table.dim(&format!(
+                "Pot {} · you {} · bot {}",
+                table.bb(state.pot()),
+                table.bb(state.stack(HERO)),
+                table.bb(state.stack(1 - HERO)),
+            ))
         );
+        print!("  {} > ", options.join("  "));
         io::stdout().flush()?;
         let mut line = String::new();
         if input.read_line(&mut line)? == 0 {
             println!();
             return Ok(None);
+        }
+        // Keep transcripts readable when input is piped rather than typed.
+        if !io::stdin().is_terminal() {
+            println!("{}", line.trim());
         }
         match parse_command(&line, state, legal) {
             Ok(Input::Act(action)) => return Ok(Some(action)),

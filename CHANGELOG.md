@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The board and the player's hand drawn as cards on every street, with the
+  hand named in plain English and its straight and flush draws.
+- A basic coach: pot odds before a decision and a review after it, with calls
+  and folds priced against equity versus a random hand (`--coach`).
 - Dual MIT / Apache-2.0 licence, contributor guide, code of conduct and
   security policy.
 - Native CI on Linux, macOS and Windows, an MSRV check (Rust 1.88) and

@@ -50,6 +50,8 @@ enum Speaker {
     Coach,
     You,
     System,
+    /// A rule across the panel, e.g. at the end of a hand.
+    Divider,
 }
 
 struct CoachLine {
@@ -113,6 +115,8 @@ pub struct App {
     confirm_quit: bool,
     over: bool,
     flash: Option<(String, Instant)>,
+    /// A divider to add once the coach has finished speaking.
+    pending_divider: Option<String>,
 }
 
 impl App {
@@ -140,6 +144,7 @@ impl App {
             confirm_quit: false,
             over: false,
             flash: None,
+            pending_divider: None,
         };
         let intro = match (&app.llm, mode) {
             (_, CoachMode::Off) => "Coach is off. Press ? for keys.".to_string(),
@@ -462,6 +467,12 @@ impl App {
         lines.push(Line::from(result.bold().fg(color)));
         lines.push(Line::from("Press space for the next hand.".dim()));
         self.log.extend(lines);
+        let summary = match outcome.winner {
+            None => "split pot".to_string(),
+            Some(HERO) => format!("you won {}", bb(net as u32, big_blind)),
+            Some(_) => format!("you lost {}", bb((-net) as u32, big_blind)),
+        };
+        self.pending_divider = Some(format!("End of hand {} · {summary}", session.hand_no()));
         let done = hands.is_some_and(|limit| session.hand_no() >= limit);
         if done {
             self.end_session();
@@ -481,6 +492,7 @@ impl App {
                 if self.last_review.is_none() {
                     return;
                 }
+                self.pending_divider = Some(format!("End of spot {}", *index + 1));
                 if *index + 1 >= spots.len() {
                     self.end_session();
                     return;
@@ -565,6 +577,12 @@ impl App {
                     }
                 }
             }
+        }
+        if self.inflight.is_none()
+            && self.queue.is_empty()
+            && let Some(text) = self.pending_divider.take()
+        {
+            self.say(Speaker::Divider, text, None);
         }
         if self.inflight.is_none()
             && let Some(llm) = self.llm.clone()
@@ -1118,8 +1136,10 @@ impl App {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(Color::DarkGray));
-        let inner_width = area.width.saturating_sub(2).max(1) as usize;
-        let mut text = Text::default();
+        let width = area.width.saturating_sub(2).max(1) as usize;
+        // Wrapped here rather than by the widget, so the line count is exact
+        // and the newest message is always fully in view.
+        let mut lines: Vec<Line> = Vec::new();
         for line in &self.coach {
             if line.text.is_empty() {
                 continue;
@@ -1129,30 +1149,27 @@ impl App {
                 (Speaker::Coach, _) => ("Coach", Style::new().fg(GOLD).bold()),
                 (Speaker::System, Some(grade)) => ("", grade_style(grade)),
                 (Speaker::System, None) => ("", Style::new().fg(Color::Gray)),
+                (Speaker::Divider, _) => {
+                    lines.push(divider(&line.text, width));
+                    lines.push(Line::default());
+                    continue;
+                }
             };
-            let mut spans = Vec::new();
-            if !label.is_empty() {
-                spans.push(Span::styled(format!("{label} "), style));
-                spans.push(Span::raw(line.text.clone()));
+            let (head, body) = if label.is_empty() {
+                (None, style)
             } else {
-                spans.push(Span::styled(line.text.clone(), style));
-            }
-            text.lines.push(Line::from(spans));
-            text.lines.push(Line::default());
+                (Some((format!("{label} "), style)), Style::new())
+            };
+            lines.extend(wrap_styled(head, &line.text, body, width));
+            lines.push(Line::default());
         }
         // Scroll to the bottom unless the reader scrolled up.
-        let rendered: usize = text
-            .lines
-            .iter()
-            .map(|l| (l.width().max(1)).div_ceil(inner_width))
-            .sum();
         let height = area.height.saturating_sub(2) as usize;
-        let bottom = rendered.saturating_sub(height) as u16;
+        let bottom = lines.len().saturating_sub(height) as u16;
         let offset = bottom.saturating_sub(self.coach_scroll);
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(Text::from(lines))
                 .block(block)
-                .wrap(Wrap { trim: false })
                 .scroll((offset, 0)),
             area,
         );
@@ -1273,6 +1290,79 @@ fn action_keys<'a>(legal: Legal, big_blind: u32, key: &dyn Fn(&str) -> Span<'a>)
         ]);
     }
     spans
+}
+
+/// Word-wraps `text` to `width` columns, after an optional styled label on
+/// the first line. Words longer than a line are split.
+fn wrap_styled(
+    head: Option<(String, Style)>,
+    text: &str,
+    style: Style,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    // Whether the next word needs a space before it (not after a label).
+    let mut gap_due = false;
+    if let Some((label, label_style)) = head {
+        used = Span::raw(label.as_str()).width();
+        spans.push(Span::styled(label, label_style));
+    }
+    for (p, paragraph) in text.split('\n').enumerate() {
+        if p > 0 {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            used = 0;
+            gap_due = false;
+        }
+        for word in paragraph.split_whitespace() {
+            let mut word = word.to_string();
+            loop {
+                let w = Span::raw(word.as_str()).width();
+                let gap = usize::from(gap_due);
+                if used + gap + w <= width {
+                    if gap == 1 {
+                        spans.push(Span::styled(" ", style));
+                    }
+                    spans.push(Span::styled(word, style));
+                    used += gap + w;
+                    gap_due = true;
+                    break;
+                }
+                if used > 0 {
+                    lines.push(Line::from(std::mem::take(&mut spans)));
+                    used = 0;
+                    gap_due = false;
+                    continue;
+                }
+                // A word wider than the whole line: split it.
+                let cut: String = word.chars().take(width).collect();
+                let rest: String = word.chars().skip(width).collect();
+                lines.push(Line::from(Span::styled(cut, style)));
+                word = rest;
+                if word.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    if !spans.is_empty() {
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// "── End of hand 3 · you won 2bb ─────────"
+fn divider(text: &str, width: usize) -> Line<'static> {
+    let head = format!("── {text} ");
+    let fill = width.saturating_sub(Span::raw(head.as_str()).width());
+    Line::from(Span::styled(
+        format!("{head}{}", "─".repeat(fill)),
+        Style::new()
+            .fg(GOLD)
+            .add_modifier(ratatui::style::Modifier::DIM),
+    ))
 }
 
 fn grade_style(grade: Grade) -> Style {
@@ -1568,6 +1658,61 @@ mod tests {
         );
         let text = screen(&app, 140, 44);
         assert!(text.contains("Session over"), "{text}");
+    }
+
+    #[test]
+    fn the_newest_coach_message_is_always_in_view() {
+        let mut app = play_app(CoachMode::After);
+        let long = "word ".repeat(40);
+        for i in 0..12 {
+            app.say(Speaker::Coach, format!("{long}marker{i}"), None);
+        }
+        // Long words wrap early: a character count would undercount the lines.
+        app.say(
+            Speaker::Coach,
+            "supercalifragilistic expialidocious ".repeat(8) + "LASTWORD",
+            None,
+        );
+        for (w, h) in [(140, 44), (90, 30), (112, 24)] {
+            let text = screen(&app, w, h);
+            assert!(text.contains("LASTWORD"), "{w}x{h}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn wrapping_is_exact() {
+        let lines = wrap_styled(
+            Some(("Coach ".into(), Style::new())),
+            "one two three\nfour",
+            Style::new(),
+            9,
+        );
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text, ["Coach one", "two three", "four"]);
+        assert!(lines.iter().all(|l| l.width() <= 9));
+        let split = wrap_styled(None, "abcdefghijk", Style::new(), 4);
+        assert_eq!(split.len(), 3);
+    }
+
+    #[test]
+    fn the_end_of_each_hand_is_marked_in_the_coach_panel() {
+        let mut app = play_app(CoachMode::After);
+        for _ in 0..200 {
+            settle(&mut app);
+            if app.hand_done || app.over {
+                break;
+            }
+            press(&mut app, KeyCode::Char('f'));
+            press(&mut app, KeyCode::Char('x'));
+        }
+        app.tick().unwrap();
+        assert!(
+            app.coach
+                .iter()
+                .any(|l| l.who == Speaker::Divider && l.text.starts_with("End of hand 1")),
+            "no end-of-hand divider"
+        );
+        assert!(screen(&app, 140, 44).contains("── End of hand 1"));
     }
 
     #[test]

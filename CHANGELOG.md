@@ -29,6 +29,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A full-screen table: cards on a felt, stacks and chips, an action log, a
   streaming coach panel, one-key actions and a bet slider with pot presets.
   `--plain` keeps the line mode, which is also used when input is piped.
+  The coach panel marks the end of each hand (or drill spot) with its result.
 - `poker leaks`: the costliest recurring mistakes across your hand history,
   with the principle that fixes each.
 - `poker drill`: replays your costliest past mistakes as practice spots.
@@ -62,6 +63,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The session's coaching summary only counts hands that were finished.
 - Hand evaluation no longer allocates, making flop equity much faster.
 - `poker replay` narrates each hand street by street.
+- The coach panel no longer hides the end of its newest message: text is
+  wrapped by word with an exact line count, so it always scrolls fully into view.
 
 ## [0.1.0]
 

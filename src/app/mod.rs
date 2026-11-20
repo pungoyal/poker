@@ -45,6 +45,25 @@ pub fn facts(spot: &Spot, action: Option<Action>, session: Option<&Session>) -> 
                 ))
             })
             .collect();
+        let seen = session.observed();
+        let pct = |x: Option<f64>| x.map(|x| (x * 100.0).round());
+        facts["opponent_seen_so_far"] = json!({
+            "hands": seen.hands,
+            "plays_pct_of_hands": pct(seen.plays()),
+            "raises_preflop_pct_of_hands": pct(seen.raises()),
+            "folds_to_postflop_bets_pct": pct(seen.folds_to_bets()),
+            "postflop_bets_and_raises_pct_of_its_actions": pct(seen.aggression()),
+        });
+        if session.opponent_hidden() {
+            // The player has to read the opponent: do not hand them its name.
+            facts["opponent"] = json!(
+                "unknown: the player is working out its style from how it plays; do not name the style, point to what it has been seen to do"
+            );
+            if let Some(map) = facts.as_object_mut() {
+                map.remove("opponent_style");
+                map.remove("how_to_beat_it");
+            }
+        }
         facts["session"] = json!({
             "hands_played": session.finished(),
             "result_bb": session.total() as f64 / big_blind as f64,

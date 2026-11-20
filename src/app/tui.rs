@@ -8,11 +8,13 @@ use super::{CoachMode, facts, session_facts};
 use poker::analysis::{Decision, analyse_with};
 use poker::bot::by_name;
 use poker::cards::Card;
-use poker::coach::{Grade, Question, Spot, questions, review};
+use poker::coach::{
+    Grade, Question, Skill, Spot, fmt_bb, fmt_bb_signed, headline, questions, review, why,
+};
 use poker::game::{Action, HandState, Legal};
 use poker::history;
 use poker::range::{Profile, Strengths};
-use poker::session::{HERO, Review, Session};
+use poker::session::{HERO, Observed, Review, Session};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -58,19 +60,31 @@ struct CoachLine {
     who: Speaker,
     text: String,
     grade: Option<Grade>,
+    extra: Extra,
 }
 
-#[derive(PartialEq)]
-enum InputPurpose {
-    /// Answering the coach's question.
-    Answer,
-    /// Asking the coach something.
-    Ask,
+/// What a line in the coach panel shows besides its text.
+enum Extra {
+    None,
+    /// The answers to a question still open, chosen with one key each.
+    Choices(Vec<String>),
+    /// A reviewed decision: the verdict and the options compared.
+    Review(Box<Review>),
+    /// The grades of the decisions in a finished hand, and the chips given up.
+    Hand(Vec<Grade>, f64),
 }
 
+/// A question to the coach being typed.
 struct Input {
-    purpose: InputPurpose,
     text: String,
+}
+
+/// The question in front of the player, answered with one key.
+struct Quiz {
+    question: Question,
+    /// Its line in the coach panel.
+    line: usize,
+    choices: usize,
 }
 
 struct BetSlider {
@@ -102,9 +116,11 @@ pub struct App {
     bet: Option<BetSlider>,
     /// The coach's analysis of the decision in front of the player.
     spot: Option<Spot>,
-    /// Questions still to ask, without a language model.
-    script: VecDeque<Question>,
-    answers: u32,
+    quiz: Option<Quiz>,
+    /// Skills already asked about in this hand.
+    asked: Vec<Skill>,
+    /// Questions asked and answered well, by skill.
+    skills: [(u32, u32); 3],
     last_review: Option<Review>,
     queue: VecDeque<(Ask, Option<serde_json::Value>, Option<String>)>,
     inflight: Option<Inflight>,
@@ -115,8 +131,9 @@ pub struct App {
     confirm_quit: bool,
     over: bool,
     flash: Option<(String, Instant)>,
-    /// A divider to add once the coach has finished speaking.
-    pending_divider: Option<String>,
+    /// A divider to add once the coach has finished speaking, with the
+    /// grades of the hand it closes.
+    pending_divider: Option<(String, Vec<Grade>, f64)>,
 }
 
 impl App {
@@ -132,8 +149,9 @@ impl App {
             input: None,
             bet: None,
             spot: None,
-            script: VecDeque::new(),
-            answers: 0,
+            quiz: None,
+            asked: Vec::new(),
+            skills: [(0, 0); 3],
             last_review: None,
             queue: VecDeque::new(),
             inflight: None,
@@ -148,12 +166,28 @@ impl App {
         };
         let intro = match (&app.llm, mode) {
             (_, CoachMode::Off) => "Coach is off. Press ? for keys.".to_string(),
-            (Some(llm), _) => format!("Coach: {}. / to ask, ? for keys.", llm.model()),
-            (None, _) => {
-                "Coach: engine only (set ANTHROPIC_API_KEY for Claude). ? for keys.".to_string()
-            }
+            (Some(llm), _) => format!(
+                "I'm watching every decision ({}). Press / to ask me anything, ? for keys.",
+                llm.model()
+            ),
+            (None, _) => "I'm watching every decision and will price each one. Set \
+                 ANTHROPIC_API_KEY to talk it through with Claude. ? for keys."
+                .to_string(),
         };
         app.say(Speaker::System, intro, None);
+        if let Game::Play { session, .. } = &app.game
+            && session.opponent_hidden()
+            && mode != CoachMode::Off
+        {
+            app.say(
+                Speaker::System,
+                "Your opponent is a mystery: a solid regular, a calling station, a nit or a \
+                 maniac. Watch what it does (top right), work out which, and adjust. I'll \
+                 tell you who it was when you leave."
+                    .to_string(),
+                None,
+            );
+        }
         app.start_hand();
         app
     }
@@ -196,8 +230,8 @@ impl App {
         self.spot = None;
         self.last_review = None;
         self.hand_done = false;
-        self.answers = 0;
-        self.script.clear();
+        self.quiz = None;
+        self.asked.clear();
         match &self.game {
             Game::Play { session, .. } => {
                 let state = session.state();
@@ -263,6 +297,7 @@ impl App {
         let legal = before.legal().expect("bot acts in a live hand");
         let action = session.bot_act();
         let line = describe("Bot", action, legal, &before);
+        self.last_review = None;
         self.log_action(&before, Line::from(line.fg(Color::LightRed)));
     }
 
@@ -280,32 +315,13 @@ impl App {
     }
 
     fn begin_decision(&mut self) {
-        if self.mode == CoachMode::Off {
-            self.spot = Some(self.analyse_quietly());
-            return;
-        }
-        let spot = match &self.game {
-            Game::Play { session, .. } => session.analyse(),
-            Game::Drill { spots, index, .. } => spots[*index].spot.clone(),
-        };
-        self.answers = 0;
+        let spot = self.analyse_quietly();
         if self.mode == CoachMode::Teach {
-            if self.llm.is_some() {
-                let facts = self.facts(&spot, None);
-                self.queue.push_back((Ask::Question, Some(facts), None));
-                self.input = Some(Input {
-                    purpose: InputPurpose::Answer,
-                    text: String::new(),
-                });
-            } else {
-                self.script = questions(&spot).into();
-                self.next_scripted_question(&spot);
-            }
+            self.ask_question(&spot);
         }
         self.spot = Some(spot);
     }
 
-    /// Without a coach the spot is still needed for sizing hints.
     fn analyse_quietly(&self) -> Spot {
         match &self.game {
             Game::Play { session, .. } => session.analyse(),
@@ -313,16 +329,63 @@ impl App {
         }
     }
 
-    fn next_scripted_question(&mut self, spot: &Spot) {
-        if let Some(q) = self.script.front() {
-            let prompt = q.prompt(spot);
-            self.say(Speaker::Coach, prompt, None);
-            self.input = Some(Input {
-                purpose: InputPurpose::Answer,
-                text: String::new(),
-            });
-        } else {
-            self.say(Speaker::Coach, "Decide.".into(), None);
+    /// Asks one question about the spot: the skill practised least so far,
+    /// and never the same skill twice in a hand.
+    fn ask_question(&mut self, spot: &Spot) {
+        let skills = self.skills;
+        let Some(question) = questions(spot)
+            .into_iter()
+            .filter(|q| !self.asked.contains(&q.skill()))
+            .min_by_key(|q| skills[q.skill() as usize].0)
+        else {
+            return;
+        };
+        self.asked.push(question.skill());
+        let (choices, _) = question.choices(spot);
+        self.coach.push(CoachLine {
+            who: Speaker::Coach,
+            text: question.ask(spot),
+            grade: None,
+            extra: Extra::Choices(choices.clone()),
+        });
+        self.coach_scroll = 0;
+        self.quiz = Some(Quiz {
+            question,
+            line: self.coach.len() - 1,
+            choices: choices.len(),
+        });
+    }
+
+    fn answer_question(&mut self, choice: usize) {
+        let (Some(quiz), Some(spot)) = (self.quiz.take(), self.spot.clone()) else {
+            return;
+        };
+        let (choices, right) = quiz.question.choices(&spot);
+        let feedback = quiz.question.answer(&spot, choice);
+        self.coach[quiz.line].extra = Extra::None;
+        let skill = &mut self.skills[quiz.question.skill() as usize];
+        skill.0 += 1;
+        if feedback.grade != Grade::Inaccuracy {
+            skill.1 += 1;
+        }
+        self.say(Speaker::You, choices[choice].clone(), None);
+        let mark = match feedback.grade {
+            Grade::Good => "✓ Right. ".to_string(),
+            Grade::Close => "≈ Close. ".to_string(),
+            _ => format!("✗ No: {}. ", choices[right]),
+        };
+        self.say(
+            Speaker::System,
+            format!("{mark}{}", feedback.text),
+            Some(feedback.grade),
+        );
+    }
+
+    /// Drops the open question unanswered.
+    fn skip_question(&mut self) {
+        if let Some(quiz) = self.quiz.take() {
+            self.coach[quiz.line].extra = Extra::None;
+            self.coach[quiz.line].text.push_str(" (skipped)");
         }
     }
 
@@ -348,7 +411,7 @@ impl App {
         }
         self.input = None;
         self.bet = None;
-        self.script.clear();
+        self.skip_question();
         let before = self.state().clone();
         let coached = self.mode != CoachMode::Off;
         let spot = self.spot.take();
@@ -392,25 +455,20 @@ impl App {
         Ok(())
     }
 
-    fn show_review(&mut self, review: &Review, before: &HandState) {
-        let big_blind = before.config().big_blind;
+    fn show_review(&mut self, review: &Review, _before: &HandState) {
         let fb = &review.feedback;
-        let headline = if fb.loss > 0.0 {
-            format!(
-                "{} · about {} given up",
-                fb.grade.label(),
-                poker::coach::fmt_bb(fb.loss, big_blind)
-            )
-        } else {
-            fb.grade.label().to_string()
-        };
-        self.say(Speaker::System, headline, Some(fb.grade));
+        self.coach.push(CoachLine {
+            who: Speaker::System,
+            text: String::new(),
+            grade: Some(fb.grade),
+            extra: Extra::Review(Box::new(review.clone())),
+        });
+        self.coach_scroll = 0;
         if self.llm.is_some() {
             let facts = self.facts(&review.spot, Some(review.action));
+            let fallback = why(&review.spot, review.action).join(" ");
             self.queue
-                .push_back((Ask::Review, Some(facts), Some(fb.text.clone())));
-        } else {
-            self.say(Speaker::Coach, fb.text.clone(), None);
+                .push_back((Ask::Review, Some(facts), Some(fallback)));
         }
         if let Game::Drill { spots, index, .. } = &self.game {
             let d = &spots[*index];
@@ -472,7 +530,13 @@ impl App {
             Some(HERO) => format!("you won {}", bb(net as u32, big_blind)),
             Some(_) => format!("you lost {}", bb((-net) as u32, big_blind)),
         };
-        self.pending_divider = Some(format!("End of hand {} · {summary}", session.hand_no()));
+        let grades: Vec<Grade> = session.reviews().iter().map(|r| r.feedback.grade).collect();
+        let lost: f64 = session.reviews().iter().map(|r| r.feedback.loss).sum();
+        self.pending_divider = Some((
+            format!("End of hand {} · {summary}", session.hand_no()),
+            grades,
+            lost,
+        ));
         let done = hands.is_some_and(|limit| session.hand_no() >= limit);
         if done {
             self.end_session();
@@ -492,7 +556,8 @@ impl App {
                 if self.last_review.is_none() {
                     return;
                 }
-                self.pending_divider = Some(format!("End of spot {}", *index + 1));
+                self.pending_divider =
+                    Some((format!("End of spot {}", *index + 1), Vec::new(), 0.0));
                 if *index + 1 >= spots.len() {
                     self.end_session();
                     return;
@@ -507,42 +572,88 @@ impl App {
         self.over = true;
         self.input = None;
         self.bet = None;
+        self.skip_question();
         let summary = match &self.game {
             Game::Play { session, .. } => {
                 let big_blind = session.config().big_blind;
-                let mut text = format!(
-                    "Session over: {} over {} hands.",
+                let hands = session.finished();
+                let mut text = vec![format!(
+                    "SESSION REPORT\nResult: {} over {} hand{}.",
                     bb_signed(session.total(), big_blind),
-                    session.finished()
-                );
-                if let Some(top) = session.tally().lines().first() {
-                    text.push_str(&format!(
-                        " Your costliest leak: {} on the {} ({} times, about {}). {}",
-                        top.leak.label(),
-                        top.street.name().to_lowercase(),
-                        top.count,
-                        poker::coach::fmt_bb(top.loss, big_blind),
-                        top.leak.tip()
+                    hands,
+                    if hands == 1 { "" } else { "s" }
+                )];
+                if self.mode != CoachMode::Off && session.reviewed() > 0 {
+                    text.push(format!(
+                        "Given up to mistakes: {}{}. This, not the result, measures how you played.",
+                        fmt_bb(session.given_up(), big_blind),
+                        per_hundred(session.given_up(), hands, big_blind)
+                            .map(|x| format!(" ({x} per 100 hands)"))
+                            .unwrap_or_default(),
+                    ));
+                    let count = |g: Grade| session.grades().get(&g).copied().unwrap_or(0);
+                    text.push(format!(
+                        "Decisions: good or close {} · inaccurate {} · mistakes {} · blunders {}.",
+                        count(Grade::Good) + count(Grade::Close),
+                        count(Grade::Inaccuracy),
+                        count(Grade::Mistake),
+                        count(Grade::Blunder),
+                    ));
+                }
+                let asked: u32 = self.skills.iter().map(|s| s.0).sum();
+                if asked > 0 {
+                    text.push(format!("Questions: {}.", skills_text(&self.skills)));
+                }
+                for (i, leak) in session.tally().lines().iter().take(3).enumerate() {
+                    if i == 0 {
+                        text.push("\nWORK ON".to_string());
+                    }
+                    text.push(format!(
+                        "{}. {} on the {} ({}×, {}). {}",
+                        i + 1,
+                        capitalise(leak.leak.label()),
+                        leak.street.name().to_lowercase(),
+                        leak.count,
+                        fmt_bb(leak.loss, big_blind),
+                        leak.leak.tip()
+                    ));
+                }
+                if session.opponent_hidden() {
+                    text.push(format!(
+                        "\nYOUR OPPONENT WAS: {}",
+                        session.bot_name().to_uppercase()
+                    ));
+                    if let Some(style) = session.bot().style() {
+                        text.push(format!("{} {}", style.blurb, style.counter));
+                    }
+                    text.push(format!(
+                        "What you saw: {}.",
+                        observed_text(&session.observed())
                     ));
                 }
                 if self.llm.is_some() && self.mode != CoachMode::Off {
                     let facts = session_facts(session);
                     self.queue.push_back((Ask::Summary, Some(facts), None));
                 }
-                text
+                text.join("\n")
             }
             Game::Drill { spots, correct, .. } => format!(
                 "Drill over: {correct} of {} spots played well.",
                 spots.len()
             ),
         };
-        self.say(Speaker::System, summary + " Press q to leave.", None);
+        self.say(Speaker::System, summary + "\nPress q to leave.", None);
     }
 
     // ---- coach plumbing ---------------------------------------------------
 
     fn say(&mut self, who: Speaker, text: String, grade: Option<Grade>) {
-        self.coach.push(CoachLine { who, text, grade });
+        self.coach.push(CoachLine {
+            who,
+            text,
+            grade,
+            extra: Extra::None,
+        });
         self.coach_scroll = 0;
     }
 
@@ -580,9 +691,17 @@ impl App {
         }
         if self.inflight.is_none()
             && self.queue.is_empty()
-            && let Some(text) = self.pending_divider.take()
+            && let Some((text, grades, lost)) = self.pending_divider.take()
         {
             self.say(Speaker::Divider, text, None);
+            if !grades.is_empty() {
+                self.coach.push(CoachLine {
+                    who: Speaker::System,
+                    text: String::new(),
+                    grade: None,
+                    extra: Extra::Hand(grades, lost),
+                });
+            }
         }
         if self.inflight.is_none()
             && let Some(llm) = self.llm.clone()
@@ -610,84 +729,28 @@ impl App {
         let Some(input) = self.input.take() else {
             return;
         };
-        let mut input = input;
-        // A leading "/" asks the coach something rather than answering it.
-        if let Some(question) = input.text.trim().strip_prefix('/') {
-            input = Input {
-                purpose: InputPurpose::Ask,
-                text: question.to_string(),
-            };
-        }
-        let text = input.text.trim().to_string();
+        let text = input.text.trim().trim_start_matches('/').trim().to_string();
         if text.is_empty() {
-            if input.purpose == InputPurpose::Answer {
-                self.skip_questions();
-            }
             return;
         }
         self.say(Speaker::You, text.clone(), None);
-        match input.purpose {
-            InputPurpose::Ask => {
-                if self.llm.is_some() {
-                    let facts = self
-                        .spot
-                        .as_ref()
-                        .or(self.last_review.as_ref().map(|r| &r.spot))
-                        .map(|spot| {
-                            let action = self
-                                .spot
-                                .is_none()
-                                .then(|| self.last_review.as_ref().map(|r| r.action))
-                                .flatten();
-                            self.facts(spot, action)
-                        });
-                    self.queue.push_back((Ask::Free(text), facts, None));
-                } else {
-                    self.say(
-                        Speaker::System,
-                        "Questions need the language-model coach: set ANTHROPIC_API_KEY and restart.".into(),
-                        None,
-                    );
-                }
-            }
-            InputPurpose::Answer => {
-                self.answers += 1;
-                if self.llm.is_some() {
-                    self.queue.push_back((Ask::Answer(text), None, None));
-                    if self.answers < 2 {
-                        self.input = Some(Input {
-                            purpose: InputPurpose::Answer,
-                            text: String::new(),
-                        });
-                    }
-                } else if let (Some(q), Some(spot)) =
-                    (self.script.front().cloned(), self.spot.clone())
-                {
-                    match q.check(&spot, &text) {
-                        Ok(feedback) => {
-                            self.script.pop_front();
-                            self.say(Speaker::Coach, feedback.text, Some(feedback.grade));
-                            self.next_scripted_question(&spot);
-                        }
-                        Err(hint) => {
-                            self.say(Speaker::System, hint, None);
-                            self.input = Some(Input {
-                                purpose: InputPurpose::Answer,
-                                text: String::new(),
-                            });
-                        }
-                    }
-                }
-            }
+        if self.llm.is_none() {
+            self.say(
+                Speaker::System,
+                "Questions need the language-model coach: set ANTHROPIC_API_KEY and restart."
+                    .into(),
+                None,
+            );
+            return;
         }
-    }
-
-    fn skip_questions(&mut self) {
-        self.input = None;
-        if !self.script.is_empty() {
-            self.script.clear();
-            self.say(Speaker::System, "Skipped. Decide.".into(), None);
-        }
+        // In teach mode the spot's numbers stay hidden until the player acts.
+        let current = self.spot.as_ref().filter(|_| self.mode != CoachMode::Teach);
+        let facts = match (current, self.last_review.as_ref()) {
+            (Some(spot), _) => Some(self.facts(spot, None)),
+            (None, Some(review)) => Some(self.facts(&review.spot, Some(review.action))),
+            (None, None) => None,
+        };
+        self.queue.push_back((Ask::Free(text), facts, None));
     }
 
     // ---- keys -------------------------------------------------------------
@@ -718,13 +781,7 @@ impl App {
         if let Some(input) = &mut self.input {
             match key.code {
                 KeyCode::Enter => self.submit_input(),
-                KeyCode::Esc => {
-                    let answering = input.purpose == InputPurpose::Answer;
-                    self.input = None;
-                    if answering {
-                        self.skip_questions();
-                    }
-                }
+                KeyCode::Esc => self.input = None,
                 KeyCode::Backspace => {
                     input.text.pop();
                 }
@@ -745,6 +802,19 @@ impl App {
             }
             return Ok(());
         }
+        if let Some(quiz) = &self.quiz {
+            match key.code {
+                KeyCode::Char(d @ '1'..='9') if (d as usize - '1' as usize) < quiz.choices => {
+                    self.answer_question(d as usize - '1' as usize);
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.skip_question();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         let legal = self.state().legal().filter(|_| self.hero_to_act());
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.confirm_quit = true,
@@ -752,7 +822,6 @@ impl App {
             KeyCode::Char('/') | KeyCode::Char('t') | KeyCode::Tab => {
                 if self.mode != CoachMode::Off {
                     self.input = Some(Input {
-                        purpose: InputPurpose::Ask,
                         text: String::new(),
                     });
                 }
@@ -789,20 +858,16 @@ impl App {
     /// Standard sizes: a third, half, three quarters and all of the pot, then all-in.
     fn presets(&self) -> Vec<u32> {
         let state = self.state();
-        let Some(legal) = state.legal() else {
+        let Some((legal, range)) = state.legal().and_then(|l| Some((l, l.raise?))) else {
             return Vec::new();
         };
-        let Some((min, max)) = legal.raise else {
-            return Vec::new();
-        };
-        let opp = state.street_commit(1 - HERO) as f64;
-        let base = (state.pot() + legal.to_call) as f64;
-        let mut sizes: Vec<u32> = [1.0 / 3.0, 0.5, 0.75, 1.0]
-            .iter()
-            .map(|share| ((opp + base * share).round() as u32).clamp(min, max))
-            .collect();
-        sizes.push(max);
-        sizes
+        poker::coach::standard_sizes(
+            state.pot(),
+            legal.to_call,
+            state.street_commit(1 - HERO),
+            state.config().big_blind,
+            range,
+        )
     }
 
     fn open_bet(&mut self, preset: Option<usize>) {
@@ -872,6 +937,10 @@ impl App {
             KeyCode::Char(d @ '1'..='5') if slider.typed.is_empty() => {
                 slider.amount = presets[d as usize - '1' as usize];
             }
+            KeyCode::Char('a') => {
+                slider.typed.clear();
+                slider.amount = max;
+            }
             KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => slider.typed.push(c),
             KeyCode::Backspace => {
                 slider.typed.pop();
@@ -901,16 +970,33 @@ impl App {
                     .areas(body);
             (a, b)
         } else {
+            // Stacked: a short table (the latest action is shown on it, so
+            // the hand log is dropped) and the coach beneath.
+            let felt = if body.height >= 34 { 20 } else { 16 };
             let [a, b] =
-                Layout::vertical([Constraint::Min(18), Constraint::Length(body.height / 3)])
-                    .areas(body);
+                Layout::vertical([Constraint::Length(felt), Constraint::Min(4)]).areas(body);
             (a, b)
         };
-        let [felt, log] =
-            Layout::vertical([Constraint::Min(15), Constraint::Length(7)]).areas(table_area);
-        self.draw_felt(frame, felt);
-        self.draw_log(frame, log);
-        self.draw_coach(frame, side);
+        if wide {
+            let [felt, log] =
+                Layout::vertical([Constraint::Min(17), Constraint::Length(7)]).areas(table_area);
+            self.draw_felt(frame, felt);
+            self.draw_log(frame, log);
+        } else {
+            self.draw_felt(frame, table_area);
+        }
+        let opponent = self.opponent_lines(side.width.saturating_sub(2) as usize);
+        if wide && !opponent.is_empty() && side.height >= 24 {
+            let [top, rest] = Layout::vertical([
+                Constraint::Length(opponent.len() as u16 + 2),
+                Constraint::Min(10),
+            ])
+            .areas(side);
+            self.draw_opponent(frame, top, opponent);
+            self.draw_coach(frame, rest);
+        } else {
+            self.draw_coach(frame, side);
+        }
         self.draw_controls(frame, controls);
 
         if self.show_help {
@@ -926,7 +1012,7 @@ impl App {
     }
 
     fn draw_title(&self, frame: &mut Frame, area: Rect) {
-        let (left, right) = match &self.game {
+        let (mut left, right) = match &self.game {
             Game::Play { session, .. } => {
                 let big_blind = session.config().big_blind;
                 let total = session.total();
@@ -937,21 +1023,32 @@ impl App {
                 } else {
                     Color::Gray
                 };
-                (
-                    vec![
-                        " ♠ poker ".bold().fg(Color::Black).bg(GOLD),
-                        format!(
-                            "  Hand {}  ·  vs {}  ·  ",
-                            session.hand_no(),
-                            session.bot_name()
-                        )
-                        .into(),
-                        format!("session {}", bb_signed(total, big_blind))
+                let mut left = vec![
+                    " ♠ poker ".bold().fg(Color::Black).bg(GOLD),
+                    format!(
+                        "  Hand {}  ·  vs {}  ·  ",
+                        session.hand_no(),
+                        session.opponent_label()
+                    )
+                    .into(),
+                    format!("result {}", bb_signed(total, big_blind))
+                        .bold()
+                        .fg(color),
+                ];
+                if self.mode != CoachMode::Off && session.reviewed() > 0 {
+                    left.push("  ·  mistakes cost ".fg(Color::Gray));
+                    left.push(
+                        fmt_bb(session.given_up(), big_blind)
                             .bold()
-                            .fg(color),
-                    ],
-                    format!("seed {}  ", session.seed()),
-                )
+                            .fg(Color::Yellow),
+                    );
+                    if let Some(rate) =
+                        per_hundred(session.given_up(), session.finished(), big_blind)
+                    {
+                        left.push(format!(" ({rate} per 100 hands)").fg(Color::Gray));
+                    }
+                }
+                (left, format!("seed {}  ", session.seed()))
             }
             Game::Drill {
                 spots,
@@ -971,11 +1068,23 @@ impl App {
                 String::new(),
             ),
         };
+        if self.skills.iter().any(|s| s.0 > 0) {
+            left.push("  ·  questions ".fg(Color::Gray));
+            left.push(skills_text(&self.skills).into());
+        }
         let [l, r] =
             Layout::horizontal([Constraint::Min(10), Constraint::Length(right.len() as u16)])
                 .areas(area);
         frame.render_widget(Paragraph::new(Line::from(left)), l);
         frame.render_widget(Paragraph::new(right.dim()), r);
+    }
+
+    /// The opponent's name on the felt.
+    fn opponent_name(&self) -> String {
+        match &self.game {
+            Game::Play { session, .. } => session.opponent_label().to_uppercase(),
+            Game::Drill { spots, index, .. } => spots[*index].opponent.to_uppercase(),
+        }
     }
 
     fn draw_felt(&self, frame: &mut Frame, area: Rect) {
@@ -989,12 +1098,13 @@ impl App {
         let state = self.state();
         let big_blind = state.config().big_blind;
         let showdown = state.outcome().is_some_and(|o| o.showdown);
-        let numbers_height = if self.show_numbers { 4 } else { 0 };
-        let [bot, middle, hero, numbers] = Layout::vertical([
+        // On a short table the opponent's face-down cards make way.
+        let compact = inner.height < 18 && !showdown;
+        let [bot, middle, hero, strip] = Layout::vertical([
+            Constraint::Length(if compact { 2 } else { 6 }),
+            Constraint::Min(4),
             Constraint::Length(6),
-            Constraint::Min(5),
-            Constraint::Length(6),
-            Constraint::Length(numbers_height),
+            Constraint::Length(2),
         ])
         .areas(inner);
 
@@ -1002,11 +1112,13 @@ impl App {
         let bot_seat = 1 - HERO;
         let bot_cards = if showdown {
             card_row(&state.hole(bot_seat), 0)
+        } else if compact {
+            Vec::new()
         } else {
             card_backs(2)
         };
         let mut lines = vec![seat_label(
-            "BOT",
+            &self.opponent_name(),
             position(state, bot_seat),
             state.stack(bot_seat),
             big_blind,
@@ -1028,6 +1140,12 @@ impl App {
             bb(state.pot(), big_blind).bold().fg(GOLD),
             format!("   ·   {}", state.street().name()).fg(Color::Gray),
         ]));
+        // The latest action, so the table reads without the hand log.
+        if let Some(last) = self.log.last().filter(|_| self.log.len() > 1) {
+            let mut last = last.clone();
+            last.style = Style::new().italic();
+            lines.push(last);
+        }
         let pad = middle.height.saturating_sub(lines.len() as u16) / 2;
         let [_, mid] =
             Layout::vertical([Constraint::Length(pad), Constraint::Min(1)]).areas(middle);
@@ -1048,62 +1166,136 @@ impl App {
         lines.push(Line::from(hand.italic().fg(Color::White)));
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), hero);
 
-        if self.show_numbers {
-            self.draw_numbers(frame, numbers);
-        }
+        self.draw_strip(frame, strip);
     }
 
-    /// Pot odds, equity, the coach's pick and the bot's likely hands. In teach
-    /// mode these appear only after you decide, so they don't give answers away.
-    fn draw_numbers(&self, frame: &mut Frame, area: Rect) {
-        let spot = if self.mode == CoachMode::Teach || self.mode == CoachMode::After {
-            self.last_review.as_ref().map(|r| &r.spot)
-        } else {
-            self.spot
-                .as_ref()
-                .or(self.last_review.as_ref().map(|r| &r.spot))
-        };
-        let Some(spot) = spot else {
-            let hint = if self.mode == CoachMode::Teach {
-                "The numbers appear once you decide."
-            } else {
-                ""
-            };
-            frame.render_widget(
-                Paragraph::new(hint.dim()).alignment(Alignment::Center),
-                area,
-            );
+    /// The decision in numbers, under the player's seat. What anyone at the
+    /// table can see is always shown; what the coach worked out (the price in
+    /// teach mode, your equity and the best play) is shown when the numbers
+    /// are on.
+    fn draw_strip(&self, frame: &mut Frame, area: Rect) {
+        let state = self.state();
+        let big_blind = state.config().big_blind;
+        let Some(legal) = state.legal().filter(|_| self.hero_to_act()) else {
             return;
         };
-        let big_blind = spot.big_blind;
-        let mut first = vec![
-            "Equity ".fg(Color::Gray),
-            format!("{:.0}%", spot.equity * 100.0).bold(),
-        ];
-        if spot.to_call > 0 {
-            first.push("   Pot odds ".fg(Color::Gray));
-            first.push(format!("{:.0}%", spot.pot_odds() * 100.0).bold());
+        let gray = |text: &str| Span::styled(text.to_string(), Style::new().fg(Color::Gray));
+        let sep = || gray("   ·   ");
+        let mut first = Vec::new();
+        if legal.to_call > 0 {
+            first.extend([
+                gray("To call "),
+                bb(legal.to_call, big_blind).bold(),
+                gray(" into "),
+                bb(state.pot(), big_blind).bold(),
+                sep(),
+                gray("Price "),
+            ]);
+            if self.mode == CoachMode::Teach && !self.show_numbers {
+                first.push("?".bold().fg(GOLD));
+            } else {
+                let need = poker::coach::pot_odds(state.pot(), legal.to_call);
+                first.push(format!("win {:.0}%+", need * 100.0).bold());
+            }
+            first.push(sep());
         }
-        if let Some(&(best, ev)) = spot.ranked(None).first() {
-            first.push("   Best ".fg(Color::Gray));
-            first.push(
-                format!(
-                    "{} ({})",
-                    spot.phrase(best),
-                    poker::coach::fmt_bb_signed(ev, big_blind)
-                )
-                .bold()
-                .fg(GOLD),
-            );
-        }
+        let behind = state.stack(HERO).min(state.stack(1 - HERO));
+        first.extend([
+            gray("Stacks "),
+            format!("{:.1}× pot", behind as f64 / state.pot().max(1) as f64).bold(),
+        ]);
         let mut lines = vec![Line::from(first)];
-        match spot.read {
-            Some(read) => lines.push(range_bar(&read, area.width.saturating_sub(4) as usize)),
-            None => lines.push(Line::from(
-                "The bot's actions say nothing about its cards yet.".fg(Color::Gray),
-            )),
+        if self.mode != CoachMode::Off {
+            match self.spot.as_ref().filter(|_| self.show_numbers) {
+                Some(spot) => {
+                    let mut second = vec![
+                        gray("Equity "),
+                        format!("{:.0}%", spot.equity * 100.0).bold(),
+                    ];
+                    if let Some(&(best, ev)) = spot.ranked(None).first() {
+                        second.extend([
+                            sep(),
+                            gray("Best "),
+                            format!("{} ({})", spot.phrase(best), fmt_bb_signed(ev, big_blind))
+                                .bold()
+                                .fg(GOLD),
+                        ]);
+                    }
+                    lines.push(Line::from(second));
+                }
+                None => lines.push(Line::from(
+                    "n  peek at your equity and the best play".fg(Color::Rgb(120, 170, 140)),
+                )),
+            }
         }
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    }
+
+    /// Who the opponent is, what it has been seen to do and what it is
+    /// likely to hold. Empty when there is nothing to show (drills).
+    fn opponent_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let Game::Play { session, .. } = &self.game else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        let seen = session.observed();
+        let gray = Style::new().fg(Color::Gray);
+        if session.opponent_hidden() && !self.over {
+            let read = match seen.read() {
+                Some(read) => format!("Looks {read}."),
+                None => format!(
+                    "Unknown. Watch what it does: a read needs about 12 hands ({} so far).",
+                    seen.hands
+                ),
+            };
+            lines.extend(wrap_styled(None, &read, Style::new().bold(), width));
+        } else if let Some(style) = session.bot().style() {
+            lines.extend(wrap_styled(None, style.blurb, Style::new().bold(), width));
+            lines.extend(wrap_styled(
+                Some(("Beat it: ".into(), Style::new().fg(GOLD).bold())),
+                style.counter,
+                Style::new(),
+                width,
+            ));
+        }
+        lines.extend(wrap_styled(
+            Some(("Seen: ".into(), gray.bold())),
+            &observed_text(&seen),
+            gray,
+            width,
+        ));
+        // Its likely hands: now if the numbers are on, else at the last review.
+        let read = if self.show_numbers {
+            self.spot.as_ref().map(|s| s.read)
+        } else {
+            self.last_review.as_ref().map(|r| r.spot.read)
+        };
+        match read {
+            Some(Some(read)) => lines.extend(range_bar(&read, width)),
+            Some(None) => lines.push(Line::from(Span::styled(
+                "Holding: any two cards so far.",
+                gray,
+            ))),
+            None if self.mode != CoachMode::Off => lines.push(Line::from(Span::styled(
+                "Holding: shown once you act (n to peek).",
+                gray,
+            ))),
+            None => {}
+        }
+        lines
+    }
+
+    fn draw_opponent(&self, frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
+        let block = Block::new()
+            .title(
+                format!(" Opponent · {} ", self.opponent_name().to_lowercase())
+                    .bold()
+                    .fg(Color::LightRed),
+            )
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(Color::DarkGray));
+        frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 
     fn draw_log(&self, frame: &mut Frame, area: Rect) {
@@ -1141,6 +1333,19 @@ impl App {
         // and the newest message is always fully in view.
         let mut lines: Vec<Line> = Vec::new();
         for line in &self.coach {
+            match &line.extra {
+                Extra::Review(review) => {
+                    lines.extend(review_card(review, width, self.llm.is_none()));
+                    lines.push(Line::default());
+                    continue;
+                }
+                Extra::Hand(grades, lost) => {
+                    lines.push(hand_line(grades, *lost, self.state().config().big_blind));
+                    lines.push(Line::default());
+                    continue;
+                }
+                _ => {}
+            }
             if line.text.is_empty() {
                 continue;
             }
@@ -1151,7 +1356,6 @@ impl App {
                 (Speaker::System, None) => ("", Style::new().fg(Color::Gray)),
                 (Speaker::Divider, _) => {
                     lines.push(divider(&line.text, width));
-                    lines.push(Line::default());
                     continue;
                 }
             };
@@ -1161,6 +1365,9 @@ impl App {
                 (Some((format!("{label} "), style)), Style::new())
             };
             lines.extend(wrap_styled(head, &line.text, body, width));
+            if let Extra::Choices(choices) = &line.extra {
+                lines.extend(choice_lines(choices, width));
+            }
             lines.push(Line::default());
         }
         // Scroll to the bottom unless the reader scrolled up.
@@ -1197,19 +1404,10 @@ impl App {
             line.push("   ".into());
         }
         if let Some(input) = &self.input {
-            let label = match input.purpose {
-                InputPurpose::Answer => "Your answer",
-                InputPurpose::Ask => "Ask the coach",
-            };
-            line.push(format!("{label}: ").bold().fg(GOLD));
+            line.push("Ask the coach: ".bold().fg(GOLD));
             line.push(Span::raw(input.text.clone()));
             line.push("▏".fg(GOLD));
-            line.push("   enter: send   esc: ".dim());
-            line.push(if input.purpose == InputPurpose::Answer {
-                "skip to acting".dim()
-            } else {
-                "cancel".dim()
-            });
+            line.push("   enter: send   esc: cancel".dim());
         } else if let Some(slider) = &self.bet {
             let state = self.state();
             let opp = state.street_commit(1 - HERO);
@@ -1246,15 +1444,34 @@ impl App {
                 " scroll coach".into(),
             ]);
         } else if let Some(legal) = self.state().legal().filter(|_| self.hero_to_act()) {
-            line.extend(action_keys(legal, big_blind, &key));
-            if self.mode != CoachMode::Off {
-                line.extend([key("/"), " ask coach  ".into()]);
+            if let Some(quiz) = &self.quiz {
+                line.extend([
+                    key(&format!("1-{}", quiz.choices)),
+                    " answer the coach  ".bold().fg(GOLD),
+                    key("esc"),
+                    " skip   ".into(),
+                    "or act:  ".fg(Color::Gray),
+                ]);
+                line.extend(action_keys(legal, big_blind, &key, false));
+            } else {
+                line.extend(action_keys(legal, big_blind, &key, true));
+                if self.mode != CoachMode::Off {
+                    line.extend([
+                        key("/"),
+                        " ask coach  ".into(),
+                        key("n"),
+                        " numbers  ".into(),
+                    ]);
+                }
+                line.extend([key("?"), " help".into()]);
             }
-            line.extend([key("n"), " numbers  ".into(), key("?"), " help".into()]);
-        } else if self.hero_to_act() || self.hand_done || self.last_review.is_some() {
+        } else if self.hero_to_act()
+            || self.hand_done
+            || self.last_review.is_some() && matches!(self.game, Game::Drill { .. })
+        {
             line.extend([
                 key("space"),
-                " next  ".into(),
+                " next hand  ".bold().fg(GOLD),
                 key("/"),
                 " ask coach  ".into(),
                 key("q"),
@@ -1267,7 +1484,200 @@ impl App {
     }
 }
 
-fn action_keys<'a>(legal: Legal, big_blind: u32, key: &dyn Fn(&str) -> Span<'a>) -> Vec<Span<'a>> {
+fn capitalise(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// Chips given up per hundred hands, once a hand has finished.
+fn per_hundred(given_up: f64, hands: u64, big_blind: u32) -> Option<String> {
+    (hands > 0).then(|| {
+        let rate = given_up / hands as f64 * 100.0 / big_blind as f64;
+        format!("{rate:.0}bb")
+    })
+}
+
+/// "Reads 2/3 · Equity 4/6", for the skills asked about so far.
+fn skills_text(skills: &[(u32, u32); 3]) -> String {
+    Skill::ALL
+        .iter()
+        .filter(|&&skill| skills[skill as usize].0 > 0)
+        .map(|&skill| {
+            let (asked, right) = skills[skill as usize];
+            format!("{} {right}/{asked}", skill.name())
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// What the opponent has been seen to do, in words.
+fn observed_text(seen: &Observed) -> String {
+    let pct = |x: f64| format!("{:.0}%", x * 100.0);
+    let mut parts = Vec::new();
+    if let Some(x) = seen.plays() {
+        parts.push(format!("plays {} of hands", pct(x)));
+    }
+    if let Some(x) = seen.raises() {
+        parts.push(format!("raises {} before the flop", pct(x)));
+    }
+    if let Some(x) = seen.folds_to_bets() {
+        parts.push(format!("folds to {} of bets ({})", pct(x), seen.faced));
+    }
+    if let Some(x) = seen.aggression() {
+        parts.push(format!(
+            "after the flop bets {} / calls {}",
+            pct(x),
+            pct(1.0 - x)
+        ));
+    }
+    if parts.is_empty() {
+        return "nothing yet.".to_string();
+    }
+    if seen.hands == 0 {
+        return parts.join(" · ");
+    }
+    format!(
+        "{} · {} hand{}",
+        parts.join(" · "),
+        seen.hands,
+        if seen.hands == 1 { "" } else { "s" }
+    )
+}
+
+fn grade_icon(grade: Grade) -> &'static str {
+    match grade {
+        Grade::Good => "✓",
+        Grade::Close => "≈",
+        Grade::Inaccuracy => "?",
+        Grade::Mistake => "✗",
+        Grade::Blunder => "✗✗",
+        Grade::Note => "·",
+    }
+}
+
+/// A reviewed decision: the verdict, the spot, the options compared and,
+/// with `points`, the facts that decided it.
+fn review_card(review: &Review, width: usize, points: bool) -> Vec<Line<'static>> {
+    let (spot, fb) = (&review.spot, &review.feedback);
+    let style = grade_style(fb.grade);
+    let mut verdict = format!("{} {}", grade_icon(fb.grade), fb.grade.label());
+    if fb.loss > 0.0 {
+        verdict.push_str(&format!(" · {} given up", fmt_bb(fb.loss, spot.big_blind)));
+    }
+    let mut lines = wrap_styled(None, &verdict, style, width);
+    let against = if spot.read.is_some() {
+        "vs its likely hands"
+    } else {
+        "vs a random hand"
+    };
+    lines.extend(wrap_styled(
+        None,
+        &format!("{} · {:.0}% {against}", headline(spot), spot.equity * 100.0),
+        Style::new().fg(Color::Gray),
+        width,
+    ));
+    if spot.ev(review.action).is_none() {
+        // A size that was not priced: say what it was for.
+        lines.extend(wrap_styled(None, &fb.text, Style::new(), width));
+        return lines;
+    }
+    let ranked = spot.ranked(Some(review.action));
+    let best = ranked[0].0;
+    let mut rows: Vec<(Action, f64)> = ranked.iter().copied().take(3).collect();
+    if let Some(&chosen) = ranked.iter().find(|&&(a, _)| a == review.action)
+        && !rows.contains(&chosen)
+    {
+        rows.push(chosen);
+    }
+    let name_width = width.saturating_sub(2 + 10 + 7).max(8);
+    for (action, ev) in rows {
+        let chosen = action == review.action;
+        let mut name = capitalise(&spot.phrase(action));
+        if name.chars().count() > name_width {
+            name = name.chars().take(name_width - 1).collect::<String>() + "…";
+        }
+        let row_style = if chosen {
+            Style::new().bold()
+        } else {
+            Style::new().fg(Color::Gray)
+        };
+        let tag = match (action == best, chosen) {
+            (true, true) => Span::styled("  ★ you", Style::new().fg(Color::LightGreen).bold()),
+            (true, false) => Span::styled("  ★ best", Style::new().fg(GOLD).bold()),
+            (false, true) => Span::styled("  you", style),
+            (false, false) => Span::raw(""),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if chosen { "▶ " } else { "  " }, style),
+            Span::styled(format!("{name:<name_width$}"), row_style),
+            Span::styled(
+                format!("{:>9}", fmt_bb_signed(ev, spot.big_blind)),
+                row_style,
+            ),
+            tag,
+        ]));
+    }
+    if points {
+        for point in why(spot, review.action) {
+            lines.extend(wrap_styled(
+                Some(("· ".into(), Style::new().fg(GOLD))),
+                &point,
+                Style::new(),
+                width,
+            ));
+        }
+    }
+    lines
+}
+
+/// "Your play  ● ● ●   0.4bb given up": one dot per decision in the hand.
+fn hand_line(grades: &[Grade], lost: f64, big_blind: u32) -> Line<'static> {
+    let mut spans = vec![Span::styled("Your play  ", Style::new().fg(Color::Gray))];
+    for &grade in grades {
+        spans.push(Span::styled("● ", grade_style(grade)));
+    }
+    spans.push(Span::styled(
+        if lost > 0.0 {
+            format!("  {} given up", fmt_bb(lost, big_blind))
+        } else {
+            "  nothing given up".to_string()
+        },
+        Style::new().fg(Color::Gray),
+    ));
+    Line::from(spans)
+}
+
+/// The answers to a question, each behind its number key, wrapped to `width`.
+fn choice_lines(choices: &[String], width: usize) -> Vec<Line<'static>> {
+    let key = Style::new().fg(Color::Black).bg(GOLD).bold();
+    let mut lines = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for (i, choice) in choices.iter().enumerate() {
+        let w = Span::raw(choice.as_str()).width() + 6;
+        if used > 0 && used + w > width {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            used = 0;
+        }
+        spans.push(Span::styled(format!(" {} ", i + 1), key));
+        spans.push(Span::raw(format!(" {choice}  ")));
+        used += w;
+    }
+    if !spans.is_empty() {
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn action_keys<'a>(
+    legal: Legal,
+    big_blind: u32,
+    key: &dyn Fn(&str) -> Span<'a>,
+    sizes: bool,
+) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     if legal.to_call > 0 {
         spans.extend([
@@ -1280,14 +1690,16 @@ fn action_keys<'a>(legal: Legal, big_blind: u32, key: &dyn Fn(&str) -> Span<'a>)
         spans.extend([key("x"), " check  ".into()]);
     }
     if let Some((_, max)) = legal.raise {
-        spans.extend([
-            key("b"),
-            " bet/raise  ".into(),
-            key("1-5"),
-            " sizes  ".into(),
-            key("a"),
-            format!(" all-in {}  ", bb(max, big_blind)).into(),
-        ]);
+        let verb = if legal.to_call > 0 {
+            " raise  "
+        } else {
+            " bet  "
+        };
+        spans.extend([key("b"), verb.into()]);
+        if sizes {
+            spans.extend([key("1-5"), " ⅓ ½ ¾ pot all-in  ".into()]);
+        }
+        spans.extend([key("a"), format!(" all-in {}  ", bb(max, big_blind)).into()]);
     }
     spans
 }
@@ -1465,28 +1877,36 @@ fn cards_text(cards: &[Card]) -> String {
         .join(" ")
 }
 
-/// The bot's likely hands as a stacked bar.
-fn range_bar(read: &Profile, width: usize) -> Line<'static> {
-    let width = width.clamp(20, 60);
+/// The bot's likely hands as a stacked bar with its legend beneath.
+fn range_bar(read: &Profile, width: usize) -> Vec<Line<'static>> {
     let parts = [
         ("strong", read.strong, Color::Rgb(210, 70, 70)),
         ("medium", read.medium, Color::Rgb(220, 160, 60)),
         ("draws", read.draws, Color::Rgb(90, 150, 220)),
         ("weak", read.weak, Color::Rgb(120, 120, 120)),
     ];
-    let mut spans = vec!["Bot's likely hands ".fg(Color::Gray)];
-    for (_, share, color) in parts {
-        let cells = (share * width as f64).round() as usize;
-        spans.push(Span::styled("█".repeat(cells), Style::new().fg(color)));
+    let label = "Holding ";
+    let cells = width.saturating_sub(label.len()).clamp(10, 48);
+    let mut bar = vec![Span::styled(label, Style::new().fg(Color::Gray).bold())];
+    let mut used = 0;
+    for (i, (_, share, color)) in parts.iter().enumerate() {
+        // The last part takes what is left, so rounding never changes the length.
+        let n = if i == parts.len() - 1 {
+            cells - used
+        } else {
+            ((share * cells as f64).round() as usize).min(cells - used)
+        };
+        used += n;
+        bar.push(Span::styled("█".repeat(n), Style::new().fg(*color)));
     }
-    spans.push(" ".into());
+    let mut legend = Vec::new();
     for (name, share, color) in parts {
-        spans.push(Span::styled(
-            format!(" {name} {:.0}%", share * 100.0),
+        legend.push(Span::styled(
+            format!("{name} {:.0}%  ", share * 100.0),
             Style::new().fg(color),
         ));
     }
-    Line::from(spans)
+    vec![Line::from(bar), Line::from(legend)]
 }
 
 fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
@@ -1526,8 +1946,11 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("← →  ↑ ↓", "adjust the size; or type an amount in bb"),
         ("a", "all-in"),
         ("/  or  tab", "ask the coach anything"),
-        ("esc", "skip the coach's questions and act"),
-        ("n", "show or hide the numbers"),
+        (
+            "1-6",
+            "answer the coach's question; esc skips it, or just act",
+        ),
+        ("n", "show or hide your equity, the price and the best play"),
         ("PgUp PgDn", "scroll the coach"),
         ("space", "next hand"),
         ("q", "leave the table"),
@@ -1541,7 +1964,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     }
     lines.push(Line::default());
     lines.push(Line::from(
-        "  In teach mode the coach asks before you act and reviews after.".dim(),
+        "  The coach asks one question before you act and prices every option after.".dim(),
     ));
     lines.push(Line::from("  Press any key to close.".dim()));
     let rect = popup_area(area, 64, lines.len() as u16 + 2);
@@ -1633,13 +2056,11 @@ mod tests {
                 press(&mut app, KeyCode::Char(' '));
                 continue;
             }
-            // Answer the first scripted question, skip the rest, then act.
-            if app.input.is_some() {
-                for c in "50".chars() {
-                    press(&mut app, KeyCode::Char(c));
-                }
-                press(&mut app, KeyCode::Enter);
-                press(&mut app, KeyCode::Esc);
+            // Answer the coach's question with one key, then act.
+            if app.quiz.is_some() {
+                assert!(screen(&app, 140, 44).contains("answer the coach"));
+                press(&mut app, KeyCode::Char('1'));
+                assert!(app.quiz.is_none());
             }
             let legal = app.state().legal().unwrap();
             if legal.raise.is_some() && app.state().street() == Street::Flop {
@@ -1657,7 +2078,42 @@ mod tests {
             "decisions were reviewed"
         );
         let text = screen(&app, 140, 44);
-        assert!(text.contains("Session over"), "{text}");
+        assert!(text.contains("SESSION REPORT"), "{text}");
+        assert!(app.skills.iter().any(|s| s.0 > 0), "questions were asked");
+    }
+
+    #[test]
+    fn a_review_shows_the_options_compared() {
+        let mut app = play_app(CoachMode::After);
+        settle(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+        let text = screen(&app, 140, 44);
+        assert!(text.contains("you"), "{text}");
+        assert!(text.contains("★"), "{text}");
+        assert!(
+            app.coach
+                .iter()
+                .any(|l| matches!(l.extra, Extra::Review(_))),
+            "no review card"
+        );
+    }
+
+    #[test]
+    fn a_mystery_opponent_is_named_only_at_the_end() {
+        let mut app = play_app(CoachMode::After);
+        if let Game::Play { session, .. } = &mut app.game {
+            session.hide_opponent();
+        }
+        settle(&mut app);
+        let text = screen(&app, 140, 44);
+        assert!(
+            text.contains("MYSTERY") && !text.contains("solid"),
+            "{text}"
+        );
+        press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Char('y'));
+        let text = screen(&app, 140, 60);
+        assert!(text.contains("YOUR OPPONENT WAS: SOLID"), "{text}");
     }
 
     #[test]

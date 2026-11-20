@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Opponent styles: `station` (limps, calls far too much), `nit` (folds to
+  pressure) and `maniac` (raises and bluffs too often) alongside `solid`. Each
+  comes with a one-line description and how to beat it, shown at the table.
+- A mystery opponent, now the default (`--bot mystery`): one of the four
+  styles, chosen in secret and named when you leave. An opponent panel shows
+  what it has been seen to do: hands played, raises before the flop, folds to
+  bets and bets against calls.
+- One-key questions: in `teach` mode the coach asks one question per decision
+  (the skill practised least), answered with a number key. Scores by skill
+  are kept in the title bar.
+- Review cards: the verdict, its cost, the best options side by side with the
+  one chosen, and the facts that decided it, in place of a paragraph.
+- The decision in numbers under your seat (the bet, the pot, the price, stacks
+  against the pot); `n` adds your equity and the best play.
+- A session report on leaving: result, what mistakes cost per 100 hands,
+  decisions by grade, question scores, the three costliest leaks and the
+  mystery opponent's name.
+- The hand's grades as a row of dots at the end of each hand.
+
 - A realistic opponent, the `solid` bot, now the default: it plays a range of
   starting hands that narrows as bets grow, bets for value, semi-bluffs, takes
   continuation bets and bluffs in balance, with one size for value and bluffs.
@@ -44,6 +63,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Release workflow that attaches prebuilt binaries to tagged releases.
 
 ### Changed
+
+- The `solid` bot defends against every bet size (it no longer folds half the
+  time to a small bet), calls shoves with its best hands, checks some strong
+  hands and defends what it checked. Betting any two cards at it no longer
+  wins; it did, by about 46bb per 100 hands.
+- Option values include an estimate of the betting still to come instead of
+  assuming the hand is checked down: weak hands are discounted before the
+  flop, hands ahead gain from later streets and hands behind pay on them. The
+  coach no longer advises raising nearly every hand before the flop.
+- An all-in of more than twice the pot is priced when chosen but no longer
+  offered as the best option. Standard bet sizes are rounded to half a big
+  blind.
+- With an API key the coach's questions are the same one-key questions; Claude
+  explains reviews and answers what you ask.
+- `--bot station` is the new calling station, which bets its good hands; hand
+  records of the old one still replay.
+- In a narrow terminal the table and coach stack, and the latest action is
+  shown on the table.
 
 - The default opponent is the `solid` bot and the default coaching is `teach`.
 - The coach's equity and prices are against the bot's likely hands rather than

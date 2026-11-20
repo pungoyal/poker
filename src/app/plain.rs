@@ -229,7 +229,7 @@ pub fn play(options: PlayOptions) -> io::Result<()> {
 
     println!(
         "Heads-up No-Limit Hold'em vs the {} bot. Session seed {}.",
-        session.bot_name(),
+        session.opponent_label(),
         session.seed()
     );
     println!(

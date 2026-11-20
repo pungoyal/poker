@@ -4,8 +4,9 @@
 //! Equity is measured against the hands the opponent is likely to hold: its
 //! range, narrowed by Bayes' rule from its known strategy each time it acts.
 //! Bets are priced by how often that range folds and how strong the part
-//! that continues is. Decision values treat the hand as checked down
-//! afterwards: they ignore betting on later streets.
+//! that continues is. Decision values are showdown values plus an estimate of
+//! the betting still to come (see [`Spot::ev`]); before the river they are
+//! estimates, not exact.
 
 use crate::bot::Bot;
 use crate::cards::{Card, Rng};
@@ -73,6 +74,30 @@ pub fn draws(hole: [Card; 2], board: &[Card]) -> Vec<String> {
         .list()
         .map(|d| format!("{} ({} outs)", d.name(), d.outs()))
         .collect()
+}
+
+/// The standard bets and raises: a third, half, three quarters and all of the
+/// pot, then all-in, as `RaiseTo` amounts within the legal `range`. Sizes are
+/// rounded to half a big blind, as a player would bet them.
+pub fn standard_sizes(
+    pot: u32,
+    to_call: u32,
+    opp_commit: u32,
+    big_blind: u32,
+    range: (u32, u32),
+) -> Vec<u32> {
+    let (min, max) = range;
+    let base = (pot + to_call) as f64;
+    let step = (big_blind / 2).max(1) as f64;
+    let mut sizes: Vec<u32> = [1.0 / 3.0, 0.5, 0.75, 1.0]
+        .iter()
+        .map(|share| {
+            let target = opp_commit as f64 + base * share;
+            (((target / step).round() * step) as u32).clamp(min, max)
+        })
+        .collect();
+    sizes.push(max);
+    sizes
 }
 
 /// Chance of winning at showdown against a random hand, counting ties as half.
@@ -229,6 +254,12 @@ pub struct Spot {
     pub responses: Vec<Response>,
     /// How the opponent answers a check, when it acts next on this street.
     pub check_response: Option<CheckResponse>,
+    /// The share of its showdown equity the hand is counted as winning when
+    /// more betting follows. Below one before the flop for weak hands, which
+    /// are bet off their equity later; one after the flop and when all-in.
+    pub realise: f64,
+    /// The opponent's style, when it has a describable one.
+    pub style: Option<crate::bot::Style>,
 }
 
 impl Spot {
@@ -264,6 +295,13 @@ impl Spot {
             read: None,
             responses: Vec::new(),
             check_response: None,
+            realise: if state.street() == Street::Preflop {
+                let position = if state.button() == me { 0.0 } else { 0.06 };
+                (0.72 + 0.36 * strengths.of(hole) - position).min(1.0)
+            } else {
+                1.0
+            },
+            style: bot.style(),
         };
 
         let mut amounts: Vec<u32> = spot
@@ -315,7 +353,7 @@ impl Spot {
                 && after.street() == state.street()
                 && after.legal().is_some_and(|l| l.raise.is_some())
             {
-                let bet_to = crate::bot::solid_raise_size(&after);
+                let bet_to = bot.raise_to(&after);
                 let mut bets = vec![0.0; COMBOS];
                 let mut checks = vec![0.0; COMBOS];
                 let (mut betting, mut total) = (0.0, 0.0);
@@ -371,35 +409,85 @@ impl Spot {
         self.responses.iter().copied().find(|r| r.amount == amount)
     }
 
-    /// Average chips won from here on by taking `action`, if the hand is then
-    /// checked down; after a check out of position, the opponent's bet and
-    /// the player's best reply (call or fold) are included. `None` for a bet
-    /// size that was not priced.
+    /// Average chips won from here on by taking `action`. The showdown value
+    /// of each line, plus an estimate of the betting still to come: before
+    /// the flop a weak hand is counted at less than its equity, and after it
+    /// a hand ahead of what continues gains from later streets while a hand
+    /// behind pays on them. After a check out of position, the opponent's
+    /// bet and the player's best reply (call or fold) are included. `None`
+    /// for a bet size that was not priced.
     pub fn ev(&self, action: Action) -> Option<f64> {
-        let (equity, pot) = (self.equity, self.pot as f64);
+        let pot = self.pot as f64;
+        // With chips behind, the hand wins `realise` of its showdown equity.
+        let all_in = |amount: u32| self.raise.is_none_or(|(_, max)| amount >= max);
+        let equity = self.equity * self.realise;
         match action {
             Action::Fold => Some(0.0),
-            Action::Check => Some(match self.check_response {
-                Some(c) => {
-                    c.bet * self.call_after_check(&c).max(0.0)
-                        + (1.0 - c.bet) * c.equity_vs_checks * pot
-                }
-                None => equity * pot,
-            }),
+            Action::Check => {
+                let behind = self.behind(self.street_commit);
+                Some(match self.check_response {
+                    Some(c) => {
+                        c.bet * self.call_after_check(&c).max(0.0)
+                            + (1.0 - c.bet)
+                                * (c.equity_vs_checks * self.realise * pot
+                                    + self.later(pot, c.equity_vs_checks, behind))
+                    }
+                    None => equity * pot + self.later(pot, self.equity, behind),
+                })
+            }
             Action::Call => {
                 let call = self.to_call as f64;
-                Some(equity * (pot + call) - call)
+                if self.raise.is_none() {
+                    // All-in: the showdown is all there is.
+                    return Some(self.equity * (pot + call) - call);
+                }
+                let behind = self.behind(self.opp_commit);
+                Some(equity * (pot + call) - call + self.later(pot + call, self.equity, behind))
             }
             Action::RaiseTo(amount) => {
                 let r = self.response(amount)?;
                 let risk = (amount - self.street_commit) as f64;
                 let called = (amount - self.opp_commit) as f64;
-                Some(
-                    r.fold * pot
-                        + (1.0 - r.fold) * (r.equity_called * (pot + risk + called) - risk),
-                )
+                let total = pot + risk + called;
+                let when_called = if all_in(amount) {
+                    r.equity_called * total - risk
+                } else {
+                    r.equity_called * self.realise * total - risk
+                        + self.later(total, r.equity_called, self.behind(amount))
+                };
+                Some(r.fold * pot + (1.0 - r.fold) * when_called)
             }
         }
+    }
+
+    /// Chips the player still has behind once the street's bets reach `level`.
+    fn behind(&self, level: u32) -> f64 {
+        self.raise
+            .map_or(0.0, |(_, max)| max.saturating_sub(level) as f64)
+    }
+
+    /// An estimate of what the streets still to come add to a line that
+    /// leaves a pot of `pot` with `behind` left to bet, for a hand with
+    /// `equity` against what the opponent continues with. Ahead, more chips
+    /// go in good; behind, more go in bad. A draw is spared the loss: it
+    /// folds when it misses and gets paid when it hits.
+    fn later(&self, pot: f64, equity: f64, behind: f64) -> f64 {
+        // Ahead, betting two thirds of the pot and being called half the
+        // time wins a third of the pot times twice the edge, on a pot that
+        // grows with each call: 0.66, 1.43 and 2.3 edges over one, two and
+        // three streets. Behind, the hand can fold, so it pays far less.
+        let (ahead, behind_rate) = match self.street {
+            Street::Preflop => (2.3, 0.45),
+            Street::Flop => (1.43, 0.3),
+            Street::Turn => (0.66, 0.15),
+            Street::River => return 0.0,
+        };
+        let edge = equity - 0.5;
+        if edge < 0.0 && self.outs >= 8 {
+            return 0.0;
+        }
+        let rate = if edge > 0.0 { ahead } else { behind_rate };
+        rate * edge * pot.min(behind)
     }
 
     /// Value of calling the opponent's bet after checking to it.
@@ -407,7 +495,9 @@ impl Spot {
         let pot = self.pot as f64;
         let added = c.bet_to.saturating_sub(self.opp_commit) as f64;
         let call = c.bet_to.saturating_sub(self.street_commit) as f64;
-        c.equity_vs_bets * (pot + added + call) - call
+        let total = pot + added + call;
+        c.equity_vs_bets * self.realise * total - call
+            + self.later(total, c.equity_vs_bets, self.behind(c.bet_to))
     }
 
     /// Share of the final pot a call must win: zero when nothing is owed.
@@ -416,20 +506,32 @@ impl Spot {
     }
 
     /// The legal actions worth comparing: fold or check, call, and bets of a
-    /// third, half, three quarters and all of the pot, plus all-in.
+    /// third, half, three quarters and all of the pot, plus all-in when that
+    /// is no more than twice the pot.
     pub fn options(&self) -> Vec<Action> {
         let mut options = if self.to_call > 0 {
             vec![Action::Fold, Action::Call]
         } else {
             vec![Action::Check]
         };
-        if let Some((min, max)) = self.raise {
+        if let Some(range) = self.raise {
+            let sizes = standard_sizes(
+                self.pot,
+                self.to_call,
+                self.opp_commit,
+                self.big_blind,
+                range,
+            );
+            // An all-in of many pots is not a size worth weighing against
+            // the others; it is still priced if the player chooses it.
             let base = (self.pot + self.to_call) as f64;
-            for share in [1.0 / 3.0, 0.5, 0.75, 1.0] {
-                let target = (self.opp_commit as f64 + base * share).round() as u32;
-                options.push(Action::RaiseTo(target.clamp(min, max)));
-            }
-            options.push(Action::RaiseTo(max));
+            let sane = |amount: u32| (amount - self.opp_commit) as f64 <= 2.0 * base;
+            options.extend(
+                sizes
+                    .into_iter()
+                    .filter(|&amount| amount < range.1 || sane(amount))
+                    .map(Action::RaiseTo),
+            );
             options.dedup();
         }
         options
@@ -595,6 +697,22 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
     }
 }
 
+/// The facts that decided `action` in `spot`, one point each, most
+/// important first. Empty for a bet size that was not priced.
+pub fn why(spot: &Spot, action: Action) -> Vec<String> {
+    if spot.ev(action).is_none() {
+        return Vec::new();
+    }
+    let best = spot.ranked(Some(action))[0].0;
+    reasons(spot, action, best)
+}
+
+/// The spot in a few words: "Pair of fives with a flush draw on the turn".
+pub fn headline(spot: &Spot) -> String {
+    let text = situation(spot);
+    text.split(": ").next().unwrap_or(&text).to_string()
+}
+
 /// "A pair of fives and a flush draw on the turn: 41% against its likely hands."
 fn situation(spot: &Spot) -> String {
     let mut hand = capitalise(&spot.made);
@@ -654,6 +772,13 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
             spot.bb(pot),
             percent(need),
             percent(equity),
+        ));
+    }
+
+    if spot.realise < 0.9 && spot.raise.is_some() {
+        why.push(format!(
+            "A weak hand wins less than its raw equity once betting continues: count it as {}.",
+            percent(equity * spot.realise)
         ));
     }
 
@@ -853,6 +978,16 @@ pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
             "weak": pct(read.weak),
         });
     }
+    if let Some(style) = spot.style {
+        facts["opponent_style"] = json!(style.blurb);
+        facts["how_to_beat_it"] = json!(style.counter);
+    }
+    if spot.realise < 1.0 {
+        facts["equity_counted_as_pct"] = json!(pct(spot.equity * spot.realise));
+        facts["equity_note"] = json!(
+            "before the flop, weak hands win less than their showdown equity once betting continues; option values use the counted figure unless all-in"
+        );
+    }
     if let Some(action) = action {
         let feedback = review(spot, action);
         facts["hero_action"] = json!(spot.phrase(action));
@@ -1026,6 +1161,211 @@ impl Question {
     }
 }
 
+/// The three things the questions practise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Skill {
+    /// Reading the opponent's likely hands.
+    Read,
+    /// Estimating equity.
+    Equity,
+    /// Working out the price of a call.
+    Price,
+}
+
+impl Skill {
+    pub const ALL: [Skill; 3] = [Skill::Read, Skill::Equity, Skill::Price];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Skill::Read => "Reads",
+            Skill::Equity => "Equity",
+            Skill::Price => "Price",
+        }
+    }
+}
+
+/// Upper edges of the equity ranges offered as answers.
+const EQUITY_EDGES: [f64; 6] = [0.2, 0.35, 0.5, 0.65, 0.8, 1.01];
+
+impl Question {
+    pub fn skill(&self) -> Skill {
+        match self {
+            Question::Read(_) => Skill::Read,
+            Question::Equity => Skill::Equity,
+            Question::PotOdds => Skill::Price,
+        }
+    }
+
+    /// The question, short enough to answer with one key.
+    pub fn ask(&self, spot: &Spot) -> String {
+        match self {
+            Question::Read(_) => "After its actions, the bot's likely hands are…".to_string(),
+            Question::Equity => {
+                if spot.read.is_some() {
+                    "How often do you win against its likely hands?".to_string()
+                } else {
+                    "How often do you win against a random hand?".to_string()
+                }
+            }
+            Question::PotOdds => format!(
+                "Calling {} into {}: how often must you win?",
+                spot.bb(spot.to_call as f64),
+                spot.bb(spot.pot as f64)
+            ),
+        }
+    }
+
+    /// The answers to choose from and the index of the right one.
+    pub fn choices(&self, spot: &Spot) -> (Vec<String>, usize) {
+        match self {
+            Question::Read(read) => {
+                let labels = ["strong", "mixed", "weak"];
+                let right = labels
+                    .iter()
+                    .position(|&l| l == read_label(read))
+                    .unwrap_or(1);
+                (
+                    vec!["mostly strong".into(), "mixed".into(), "mostly weak".into()],
+                    right,
+                )
+            }
+            Question::Equity => {
+                let names = [
+                    "under 20%",
+                    "20–35%",
+                    "35–50%",
+                    "50–65%",
+                    "65–80%",
+                    "over 80%",
+                ];
+                let right = EQUITY_EDGES
+                    .iter()
+                    .position(|&edge| spot.equity < edge)
+                    .unwrap_or(5);
+                (names.iter().map(|n| n.to_string()).collect(), right)
+            }
+            Question::PotOdds => {
+                let (pot, call) = (spot.pot as f64, spot.to_call as f64);
+                let need = (spot.pot_odds() * 100.0).round() as i64;
+                // The usual slips: leaving your call out of the pot, or
+                // dividing by the pot before the bet.
+                let mut options = vec![need];
+                for wrong in [
+                    call / pot,
+                    call / (pot - call).max(1.0),
+                    call / (pot + 2.0 * call),
+                    1.0 - spot.pot_odds(),
+                ] {
+                    let wrong = (wrong * 100.0).round() as i64;
+                    if options.len() < 4
+                        && (1..=99).contains(&wrong)
+                        && options.iter().all(|&o| (o - wrong).abs() >= 3)
+                    {
+                        options.push(wrong);
+                    }
+                }
+                let mut pad = 7;
+                while options.len() < 4 {
+                    let extra = (need + pad).rem_euclid(100).max(1);
+                    if options.iter().all(|&o| (o - extra).abs() >= 3) {
+                        options.push(extra);
+                    }
+                    pad += 9;
+                }
+                options.sort_unstable();
+                let right = options.iter().position(|&o| o == need).unwrap();
+                (options.iter().map(|o| format!("{o}%")).collect(), right)
+            }
+        }
+    }
+
+    /// Marks the answer `choice`, an index into [`choices`](Question::choices).
+    pub fn answer(&self, spot: &Spot, choice: usize) -> Feedback {
+        let (_, right) = self.choices(spot);
+        let correct = choice == right;
+        let (grade, text) = match self {
+            Question::Read(read) => {
+                let why = if spot.to_call > 0 {
+                    "Each bet strips out hands that would fold or check."
+                } else {
+                    "Checks and calls keep weak hands; strong hands mostly bet."
+                };
+                (
+                    if correct {
+                        Grade::Good
+                    } else {
+                        Grade::Inaccuracy
+                    },
+                    format!("{read}. {why}"),
+                )
+            }
+            Question::Equity => {
+                let actual = spot.equity;
+                // A neighbouring range counts as close when the truth sits near its edge.
+                let near = choice.abs_diff(right) == 1 && {
+                    let edge = EQUITY_EDGES[choice.min(right)];
+                    (actual - edge).abs() <= 0.04
+                };
+                let mut text = format!("{}.", percent(actual));
+                if !correct && !near {
+                    text.push_str(if choice > right {
+                        " You were too hopeful."
+                    } else {
+                        " You were too cautious."
+                    });
+                    if spot.read.is_some() && choice > right {
+                        text.push_str(
+                            " Measure against the hands it would play this way, not any two cards.",
+                        );
+                    }
+                }
+                if spot.outs > 0 && spot.street != Street::River {
+                    let (rule, cards) = if spot.street == Street::Flop {
+                        (4, "two cards")
+                    } else {
+                        (2, "one card")
+                    };
+                    text.push_str(&format!(
+                        " Rule of {rule}: {} outs, {cards} to come, about {}% to hit.",
+                        spot.outs,
+                        spot.outs * rule
+                    ));
+                }
+                let grade = if correct {
+                    Grade::Good
+                } else if near {
+                    Grade::Close
+                } else {
+                    Grade::Inaccuracy
+                };
+                (grade, text)
+            }
+            Question::PotOdds => {
+                let total = spot.pot + spot.to_call;
+                let working = format!(
+                    "call ÷ (pot + call) = {} ÷ {} = {}",
+                    spot.bb(spot.to_call as f64),
+                    spot.bb(total as f64),
+                    percent(spot.pot_odds())
+                );
+                if correct {
+                    (Grade::Good, format!("{working}."))
+                } else {
+                    (
+                        Grade::Inaccuracy,
+                        format!("{working}. Your call is part of the final pot."),
+                    )
+                }
+            }
+        };
+        Feedback {
+            grade,
+            loss: 0.0,
+            text,
+        }
+    }
+}
+
 /// Parses "35", "35%" or "0.35" as a share between 0 and 1.
 fn parse_percent(answer: &str) -> Result<f64, String> {
     let number: f64 = answer
@@ -1165,6 +1505,8 @@ mod tests {
             read: None,
             responses: Vec::new(),
             check_response: None,
+            realise: 1.0,
+            style: None,
         }
     }
 
@@ -1227,11 +1569,19 @@ mod tests {
 
     #[test]
     fn bets_are_priced_against_the_opponents_fold_rate() {
-        // Against a calling station, a strong hand should bet as big as it can.
+        // Against a calling station, a strong hand should bet the biggest
+        // size on offer. An all-in of 25 pots is not one of them.
         let station = betting(400, 0.8, 0.0);
         let (best, _) = station.ranked(None)[0];
-        assert_eq!(best, Action::RaiseTo(10_000));
-        let small = review(&station, Action::RaiseTo(133));
+        assert_eq!(best, Action::RaiseTo(400));
+        assert!(!station.options().contains(&Action::RaiseTo(10_000)));
+        // With less behind, all-in is a size like any other.
+        let short = Spot {
+            raise: Some((100, 700)),
+            ..spot(400, 0, 0.8)
+        };
+        assert!(short.options().contains(&Action::RaiseTo(700)));
+        let small = review(&station, Action::RaiseTo(150));
         assert!(small.loss > 0.0);
         assert!(small.text.contains("Size up"), "{}", small.text);
         let slowplay = review(&station, Action::Check);
@@ -1245,12 +1595,66 @@ mod tests {
         assert!(bluff.grade != Grade::Good);
         assert!(bluff.text.contains("cannot win the pot"), "{}", bluff.text);
 
-        // A bot that folds 20% to any size: a small bluff beats a big one.
-        // Betting 200 into 400 needs folds 200 / 600 = 33% of the time.
-        let folder = betting(400, 0.2, 0.2);
+        // A bot that folds 30% to any size on the river: a small bluff beats
+        // a big one. Betting 200 into 400 needs folds 200 / 600 = 33% of the time.
+        let mut folder = betting(400, 0.2, 0.3);
+        folder.street = Street::River;
         let half = review(&folder, Action::RaiseTo(200));
         assert!(half.text.contains("33%"), "{}", half.text);
         assert!(half.text.contains("Size down"), "{}", half.text);
+    }
+
+    #[test]
+    fn one_key_answers_are_marked() {
+        let facing = spot(300, 100, 0.40);
+        // Pot odds: 100 into 300 needs 25%, offered among the usual slips.
+        let (choices, right) = Question::PotOdds.choices(&facing);
+        assert_eq!(choices.len(), 4);
+        assert_eq!(choices[right], "25%");
+        assert!(choices.contains(&"33%".to_string()), "{choices:?}");
+        assert_eq!(Question::PotOdds.answer(&facing, right).grade, Grade::Good);
+        let wrong = Question::PotOdds.answer(&facing, (right + 1) % 4);
+        assert_eq!(wrong.grade, Grade::Inaccuracy);
+        assert!(
+            wrong.text.contains("part of the final pot"),
+            "{}",
+            wrong.text
+        );
+
+        // Equity: 40% is in the 35–50% range; 50–65% is wrong, not close.
+        let (choices, right) = Question::Equity.choices(&facing);
+        assert_eq!(choices[right], "35–50%");
+        assert_eq!(Question::Equity.answer(&facing, right).grade, Grade::Good);
+        assert_eq!(
+            Question::Equity.answer(&facing, right + 1).grade,
+            Grade::Inaccuracy
+        );
+        // 48% is close enough to the edge for the next range up to count as close.
+        let edge = spot(300, 100, 0.48);
+        let (_, right) = Question::Equity.choices(&edge);
+        assert_eq!(
+            Question::Equity.answer(&edge, right + 1).grade,
+            Grade::Close
+        );
+    }
+
+    #[test]
+    fn weak_hands_are_discounted_before_the_flop_unless_all_in() {
+        let mut weak = Spot {
+            raise: Some((200, 10_000)),
+            street: Street::Preflop,
+            realise: 0.75,
+            ..spot(300, 100, 0.40)
+        };
+        // Counted at 30%, a call needing 25% is still good, but worth less.
+        close(
+            weak.ev(Action::Call).unwrap(),
+            0.30 * 400.0 - 100.0 + 0.15 * 3.0 * -0.1 * 400.0,
+            1e-9,
+        );
+        // Facing an all-in there is no more betting: full equity.
+        weak.raise = None;
+        close(weak.ev(Action::Call).unwrap(), 0.40 * 400.0 - 100.0, 1e-9);
     }
 
     #[test]

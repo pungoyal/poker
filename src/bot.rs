@@ -86,15 +86,24 @@ pub trait Bot {
     /// How this bot plays the player to act in `state` when holding `hole`.
     /// `strengths` must be for the current board.
     fn tendencies(&self, state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix;
+
+    /// What it bets or raises to in `state`, when it does.
+    fn raise_to(&self, state: &HandState) -> u32 {
+        solid_raise_size(state)
+    }
+
+    /// Its style of play, if it has a describable one.
+    fn style(&self) -> Option<Style> {
+        None
+    }
 }
 
 /// The bot with this name, if there is one.
 pub fn by_name(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
     match name {
-        "solid" => Some(Box::new(SolidBot::new(seed))),
         "random" => Some(Box::new(RandomBot::new(seed))),
         "calling station" => Some(Box::new(CallingStation)),
-        _ => None,
+        name => Some(Box::new(StyleBot::new(style_named(name)?, seed))),
     }
 }
 
@@ -168,33 +177,172 @@ impl Bot for RandomBot {
     }
 }
 
-/// A sound, straightforward regular. Before the flop it plays a range of
-/// starting hands that narrows as the bets get bigger; after it, it bets and
-/// calls by hand strength and pot odds, semi-bluffs draws, continuation-bets
-/// with the initiative and bluffs now and then. Bets are one size for value
-/// and bluffs alike, so the size gives nothing away.
-pub struct SolidBot {
+/// How a [`StyleBot`] plays: one set of dials covers a sound regular and the
+/// usual kinds of weaker player.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    pub name: &'static str,
+    /// What kind of player this is, in a few words.
+    pub blurb: &'static str,
+    /// How to beat it.
+    pub counter: &'static str,
+    /// First in on the button: the share of hands it raises.
+    open: f64,
+    /// The share of hands below those that it limps.
+    limp: f64,
+    /// The share of hands it raises after a limp.
+    iso: f64,
+    /// How wide it continues against raises; 1 is sound.
+    defend: f64,
+    /// The share of its continuing hands that re-raise for value.
+    reraise: f64,
+    /// How often the hands just below its calls re-raise as a bluff.
+    reraise_bluff: f64,
+    /// The strength from which it bets for value.
+    value: f64,
+    /// How often it bets medium hands for thin value.
+    thin: f64,
+    /// Its bluffs and semi-bluffs; 1 is sound.
+    bluff: f64,
+    /// Shift of the strength it needs to call a bet: negative calls more.
+    call: f64,
+    /// Its raises after the flop; 1 is sound.
+    raise: f64,
+    /// Its bet, as a share of the pot.
+    bet_size: f64,
+}
+
+/// A sound, straightforward regular: plays a range of starting hands that
+/// narrows as the bets get bigger, bets and calls by hand strength and pot
+/// odds, semi-bluffs draws, continuation-bets and bluffs now and then. It
+/// defends enough against every bet size that betting any two cards at it
+/// does not pay.
+pub const SOLID: Style = Style {
+    name: "solid",
+    blurb: "A sound regular: bets its good hands, bluffs in balance, defends enough.",
+    counter: "No big hole. Play your equity and the price; bluff only with a reason.",
+    open: 0.8,
+    limp: 0.0,
+    iso: 0.3,
+    defend: 1.0,
+    reraise: 0.22,
+    reraise_bluff: 0.3,
+    value: 0.8,
+    thin: 0.35,
+    bluff: 1.0,
+    call: 0.0,
+    raise: 1.0,
+    bet_size: 0.66,
+};
+
+/// Loose and passive: the most common player in a home game.
+pub const STATION: Style = Style {
+    name: "station",
+    blurb: "A calling station: plays most hands, limps, calls far too much, rarely raises.",
+    counter: "Never bluff. Bet your good hands big and often; its raises mean strength.",
+    open: 0.15,
+    limp: 0.7,
+    iso: 0.08,
+    defend: 1.5,
+    reraise: 0.08,
+    reraise_bluff: 0.0,
+    value: 0.85,
+    thin: 0.15,
+    bluff: 0.15,
+    call: -0.22,
+    raise: 0.4,
+    bet_size: 0.5,
+};
+
+/// Tight and timid.
+pub const NIT: Style = Style {
+    name: "nit",
+    blurb: "A nit: plays few hands, folds to pressure, bets only when it has it.",
+    counter: "Steal its blinds and bet when it checks. When it bets or raises, believe it and fold.",
+    open: 0.3,
+    limp: 0.1,
+    iso: 0.12,
+    defend: 0.55,
+    reraise: 0.25,
+    reraise_bluff: 0.0,
+    value: 0.82,
+    thin: 0.15,
+    bluff: 0.25,
+    call: 0.18,
+    raise: 0.8,
+    bet_size: 0.66,
+};
+
+/// Loose and aggressive.
+pub const MANIAC: Style = Style {
+    name: "maniac",
+    blurb: "A maniac: raises most hands, bets big and bluffs far too often.",
+    counter: "Do not bluff it. Call down lighter with made hands and let it bet for you.",
+    open: 0.92,
+    limp: 0.0,
+    iso: 0.6,
+    defend: 1.3,
+    reraise: 0.4,
+    reraise_bluff: 1.0,
+    value: 0.7,
+    thin: 0.6,
+    bluff: 2.2,
+    call: -0.08,
+    raise: 1.8,
+    bet_size: 1.0,
+};
+
+/// Every style, the sound one first.
+pub const STYLES: [Style; 4] = [SOLID, STATION, NIT, MANIAC];
+
+/// The style with this name, if there is one.
+pub fn style_named(name: &str) -> Option<Style> {
+    STYLES.into_iter().find(|s| s.name == name)
+}
+
+/// A bot that plays a [`Style`]. Bets are one size for value and bluffs
+/// alike, so the size gives nothing away.
+pub struct StyleBot {
+    style: Style,
     rng: Rng,
     strengths: Option<Strengths>,
 }
 
-impl SolidBot {
-    pub fn new(seed: u64) -> SolidBot {
-        SolidBot {
+impl StyleBot {
+    pub fn new(style: Style, seed: u64) -> StyleBot {
+        StyleBot {
+            style,
             rng: Rng::new(seed),
             strengths: None,
         }
     }
+
+    pub fn style(&self) -> Style {
+        self.style
+    }
 }
+
+/// The sound regular.
+pub struct SolidBot;
+
+impl SolidBot {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(seed: u64) -> StyleBot {
+        StyleBot::new(SOLID, seed)
+    }
+}
+
+/// The share of its strong hands a style checks rather than bets.
+const TRAPS: f64 = 0.3;
 
 /// Smooth step from 0 to 1 as `x` passes zero; `width` sets how gradual.
 fn soft(x: f64, width: f64) -> f64 {
     1.0 / (1.0 + (-x / width).exp())
 }
 
-impl Bot for SolidBot {
+impl Bot for StyleBot {
     fn name(&self) -> &'static str {
-        "solid"
+        self.style.name
     }
 
     fn act(&mut self, state: &HandState, seat: usize) -> Action {
@@ -210,20 +358,28 @@ impl Bot for SolidBot {
         match mix.sample(self.rng.unit()) {
             Kind::Fold => Action::Fold,
             Kind::Passive => passive_action(state),
-            Kind::Aggressive => Action::RaiseTo(solid_raise_size(state)),
+            Kind::Aggressive => Action::RaiseTo(self.raise_to(state)),
         }
     }
 
     fn tendencies(&self, state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix {
         if state.street() == Street::Preflop {
-            solid_preflop(state, hole, strengths)
+            style_preflop(&self.style, state, hole, strengths)
         } else {
-            solid_postflop(state, hole, strengths)
+            style_postflop(&self.style, state, hole, strengths)
         }
+    }
+
+    fn raise_to(&self, state: &HandState) -> u32 {
+        raise_size(state, self.style.bet_size)
+    }
+
+    fn style(&self) -> Option<Style> {
+        Some(self.style)
     }
 }
 
-fn solid_preflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix {
+fn style_preflop(style: &Style, state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix {
     let legal = state.legal().expect("hand is over");
     let me = state.to_act().unwrap();
     // How far from the top: 0 for aces, 1 for seven-deuce.
@@ -231,37 +387,58 @@ fn solid_preflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> M
     let bb = state.config().big_blind as f64;
     if state.raises() == 0 {
         return if legal.to_call > 0 {
-            // First in on the button: raise most hands, fold the rest, never limp.
-            Mix::legal(state, soft(0.8 - p, 0.015), 0.0, 0.0)
+            // First in on the button: raise the best hands, limp the next, fold the rest.
+            let raise = soft(style.open - p, 0.015);
+            let play = soft(style.open + style.limp - p, 0.015);
+            Mix::legal(state, raise, 0.0, (play - raise).max(0.0))
         } else {
             // The button limped: raise for value, check the rest.
-            Mix::legal(state, soft(0.3 - p, 0.015), 0.0, 1.0)
+            Mix::legal(state, soft(style.iso - p, 0.015), 0.0, 1.0)
         };
     }
     // Facing a raise: the bigger it is, the fewer hands continue.
     let size = state.street_commit(1 - me) as f64 / bb;
     // Facing a re-raise it already showed strength, so it defends more of
     // what it has left rather than folding to every 4-bet.
-    let defend = match state.raises() {
-        1 => 1.6,
-        2 => 3.8,
-        _ => 2.6,
+    // However big the raise, the best hands still continue: enough of them
+    // that shoving any two cards at it does not pay.
+    let (defend, floor) = match state.raises() {
+        1 => (1.6, 0.06),
+        2 => (3.8, 0.1),
+        _ => (2.6, 0.05),
     };
-    let width = (defend / size).clamp(0.04, 0.68);
+    let cap = (0.68 * style.defend).min(0.95);
+    let width = (defend * style.defend / size).clamp(floor * style.defend, cap);
+    // After limping, its best hands are gone (they raised): it continues
+    // with the top of what it limped rather than the top of every hand.
+    let limped = style.limp > 0.0
+        && state
+            .actions()
+            .iter()
+            .find(|&&(seat, _)| seat == me)
+            .is_some_and(|&(_, first)| first == Action::Call && state.button() == me);
+    let p = if limped {
+        ((p - style.open) / style.limp).max(0.0)
+    } else {
+        p
+    };
     // Edges blur in proportion to the range: tight ranges have sharp edges.
     let blur = |w: f64| (0.03 * w).max(0.001);
     let continuing = soft(width - p, blur(width));
-    let value = soft(0.22 * width - p, blur(0.22 * width));
+    let value_width = style.reraise * width;
+    let value = soft(value_width - p, blur(value_width));
     // A few re-raise bluffs from the hands just too weak to call an open.
     let bluff = if state.raises() == 1 {
-        0.3 * soft(p - width, blur(width)) * soft(width + 0.12 - p, blur(width))
+        (0.3 * style.reraise_bluff).min(0.9)
+            * soft(p - width, blur(width))
+            * soft(width + 0.12 - p, blur(width))
     } else {
         0.0
     };
     Mix::legal(state, value, bluff, (continuing - value).max(0.0))
 }
 
-fn solid_postflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix {
+fn style_postflop(style: &Style, state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix {
     let legal = state.legal().expect("hand is over");
     let me = state.to_act().unwrap();
     let street = state.street();
@@ -270,9 +447,10 @@ fn solid_postflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> 
     let drawing = street != Street::River && outs >= 4;
 
     if legal.to_call == 0 {
-        let value = 0.85 * soft(strength - 0.8, 0.03);
-        let thin = 0.35 * soft(strength - 0.62, 0.03);
-        let semi_bluff = match outs {
+        // Some strong hands check, so a check does not rule them out.
+        let value = (1.0 - TRAPS) * soft(strength - style.value, 0.03);
+        let thin = style.thin * soft(strength - 0.62, 0.03);
+        let semi_bluff: f64 = match outs {
             _ if !drawing => 0.0,
             8.. => 0.55,
             _ => 0.25,
@@ -286,16 +464,38 @@ fn solid_postflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> 
             0.12
         };
         let bluff = bluff_rate * soft(0.42 - strength, 0.03);
-        let bet = value.max(thin).max(semi_bluff).max(bluff);
+        let bluffs = (semi_bluff.max(bluff) * style.bluff).min(0.9);
+        let bet = value.max(thin).max(bluffs);
         return Mix::legal(state, bet, 0.0, 1.0);
     }
 
-    // Facing a bet: continue with hands that beat what the bet represents.
+    // Facing a bet: continue with enough hands that the bet cannot profit
+    // with any two cards. A bet of b pots must fold b / (1 + b) to do that.
     let pot = state.pot() as f64;
     let to_call = legal.to_call as f64;
     let bet_size = to_call / (pot - to_call).max(1.0);
     let river = if street == Street::River { 0.05 } else { 0.0 };
-    let threshold = (0.44 + 0.2 * bet_size.min(1.5) + river).min(0.92);
+    let mut folds = bet_size / (1.0 + bet_size);
+    // After checking, most of its strong hands are gone (they bet), so the
+    // same share of what is left sits lower: it calls with weaker hands
+    // rather than folding nearly everything to a big bet.
+    let checked = state.button() != me && state.raises() == 1 && state.street_commit(me) == 0;
+    if checked {
+        let strong = (1.0 - style.value) * TRAPS;
+        let defend = (1.0 - folds) * (style.value + strong);
+        folds = if defend > strong {
+            style.value - (defend - strong)
+        } else {
+            1.0 - defend / TRAPS
+        };
+    }
+    // A loose or tight caller leans that way less the bigger the bet: even
+    // a calling station needs a real hand to call several pots.
+    let lean = style.call / (1.0 + bet_size / 4.0);
+    // A little tighter than that against ordinary bets, which are mostly for
+    // value; not against overbets, where every extra fold is costly.
+    let caution = (0.05 + river) / (1.0 + bet_size);
+    let threshold = (folds + caution + lean).clamp(0.02, 0.97);
     let mut continuing = soft(strength - threshold, 0.03);
     if drawing {
         // Draws continue when the price is close to their chance of hitting.
@@ -304,9 +504,14 @@ fn solid_postflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> 
             continuing = continuing.max(0.9);
         }
     }
-    let value = 0.5 * soft(strength - (threshold + 0.28).min(0.95), 0.02);
-    let semi_bluff = if drawing && outs >= 8 { 0.2 } else { 0.0 };
-    let bluff = 0.04 * soft(0.3 - strength, 0.03);
+    let value_from = (threshold + 0.28).clamp(0.82, 0.93);
+    let value = (0.5 * style.raise).min(0.9) * soft(strength - value_from, 0.02);
+    let semi_bluff = if drawing && outs >= 8 {
+        (0.2 * style.bluff).min(0.5)
+    } else {
+        0.0
+    };
+    let bluff = (0.04 * style.bluff).min(0.3) * soft(0.3 - strength, 0.03);
     Mix::legal(
         state,
         value + semi_bluff,
@@ -315,8 +520,13 @@ fn solid_postflop(state: &HandState, hole: [Card; 2], strengths: &Strengths) -> 
     )
 }
 
-/// The solid bot's bet or raise size in `state`, within the legal range.
+/// The sound regular's bet or raise size in `state`, within the legal range.
 pub fn solid_raise_size(state: &HandState) -> u32 {
+    raise_size(state, SOLID.bet_size)
+}
+
+/// A bet of `share` of the pot, or a standard raise, within the legal range.
+fn raise_size(state: &HandState, share: f64) -> u32 {
     let legal = state.legal().expect("hand is over");
     let (min, max) = legal.raise.expect("no raise is possible");
     let me = state.to_act().unwrap();
@@ -330,7 +540,7 @@ pub fn solid_raise_size(state: &HandState) -> u32 {
             _ => 2.3 * facing,
         }
     } else if facing == 0.0 {
-        0.66 * state.pot() as f64
+        share * state.pot() as f64
     } else {
         3.0 * facing
     };
@@ -355,7 +565,8 @@ mod tests {
         match kind {
             0 => Box::new(SolidBot::new(seed)),
             1 => Box::new(RandomBot::new(seed)),
-            _ => Box::new(CallingStation),
+            2 => Box::new(CallingStation),
+            n => Box::new(StyleBot::new(STYLES[(n - 2) as usize], seed)),
         }
     }
 
@@ -379,16 +590,16 @@ mod tests {
 
     #[test]
     fn bots_only_make_legal_moves() {
-        for a in 0..3 {
-            for b in 0..3 {
-                match_up(a, b, 150);
+        for a in 0..6 {
+            for b in 0..6 {
+                match_up(a, b, 40);
             }
         }
     }
 
     #[test]
     fn tendencies_are_probabilities() {
-        let bots: Vec<Box<dyn Bot>> = (0..3).map(|k| new_bot(k, 0)).collect();
+        let bots: Vec<Box<dyn Bot>> = (0..6).map(|k| new_bot(k, 0)).collect();
         for seed in 0..40u64 {
             let mut state = HandState::deal(Config::default(), 0, &shuffled_deck(seed));
             let mut driver = SolidBot::new(seed);
@@ -427,6 +638,81 @@ mod tests {
         shove.apply(Action::RaiseTo(10_000)).unwrap();
         assert!(bot.tendencies(&shove, hole("Ah Ad"), &strengths).passive > 0.99);
         assert!(bot.tendencies(&shove, hole("9h 8h"), &strengths).fold > 0.99);
+    }
+
+    /// The share of all hands `style` folds in `state`.
+    fn fold_rate(style: Style, state: &HandState) -> f64 {
+        let strengths = Strengths::new(state.board());
+        let bot = StyleBot::new(style, 0);
+        let live: Vec<usize> = (0..crate::range::COMBOS)
+            .filter(|&i| {
+                crate::range::combo(i)
+                    .iter()
+                    .all(|c| !state.board().contains(c))
+            })
+            .collect();
+        let folds: f64 = live
+            .iter()
+            .map(|&i| {
+                bot.tendencies(state, crate::range::combo(i), &strengths)
+                    .fold
+            })
+            .sum();
+        folds / live.len() as f64
+    }
+
+    #[test]
+    fn styles_answer_bets_differently() {
+        // Seat 0 opens, seat 1 calls; seat 1 checks the flop and seat 0 bets half the pot.
+        let mut state = HandState::deal(Config::default(), 0, &shuffled_deck(4));
+        for action in [Action::RaiseTo(250), Action::Call, Action::Check] {
+            state.apply(action).unwrap();
+        }
+        state.apply(Action::RaiseTo(250)).unwrap();
+        let (station, solid, nit) = (
+            fold_rate(STATION, &state),
+            fold_rate(SOLID, &state),
+            fold_rate(NIT, &state),
+        );
+        assert!(station < solid && solid < nit, "{station} {solid} {nit}");
+        // The sound regular folds no more than half the time to a half-pot
+        // bet, so betting any two cards at it does not pay.
+        assert!(solid < 0.5, "{solid}");
+        assert!(station < 0.2, "{station}");
+    }
+
+    #[test]
+    fn nobody_folds_everything_to_a_shove() {
+        let hole = |s: &str| {
+            let c = parse_cards(s).unwrap();
+            [c[0], c[1]]
+        };
+        let strengths = Strengths::new(&[]);
+        // The station limps the button, then faces an all-in: the top of
+        // what it limped with still calls, though its best hands raised.
+        let mut state = HandState::deal(Config::default(), 0, &shuffled_deck(0));
+        state.apply(Action::Call).unwrap();
+        state.apply(Action::RaiseTo(10_000)).unwrap();
+        let station = StyleBot::new(STATION, 0);
+        assert!(
+            station
+                .tendencies(&state, hole("Ah Td"), &strengths)
+                .passive
+                > 0.9
+        );
+        assert!(station.tendencies(&state, hole("7c 2d"), &strengths).fold > 0.9);
+    }
+
+    #[test]
+    fn every_style_has_a_name_to_replay_by() {
+        for style in STYLES {
+            assert_eq!(by_name(style.name, 0).unwrap().name(), style.name);
+        }
+        assert!(
+            by_name("calling station", 0).is_some(),
+            "old records still load"
+        );
+        assert!(by_name("nobody", 0).is_none());
     }
 
     #[test]

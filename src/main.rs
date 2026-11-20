@@ -4,7 +4,7 @@ use app::CoachMode;
 use app::llm::Llm;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use poker::analysis::drill_spots;
-use poker::bot::{Bot, CallingStation, RandomBot, SolidBot};
+use poker::bot::{Bot, MANIAC, NIT, RandomBot, SOLID, STATION, STYLES, StyleBot};
 use poker::game::Config;
 use poker::session::Session;
 use std::io::{self, IsTerminal};
@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(
-    about = "Heads-up No-Limit Hold'em trainer: play a solid bot with a coach that teaches you to decide"
+    about = "Heads-up No-Limit Hold'em trainer: play the kinds of player you meet at a home game, with a coach that teaches you to read and beat each one"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,13 +84,20 @@ struct PlayArgs {
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 enum BotKind {
-    /// A sound regular: plays ranges, bets for value, bluffs in balance
+    /// One of the styles below, chosen at random and kept secret until the
+    /// session ends: work out who you are playing from how it plays
     #[default]
+    Mystery,
+    /// A sound regular: plays ranges, bets for value, bluffs in balance
     Solid,
+    /// Loose and passive: limps, calls far too much, rarely raises
+    Station,
+    /// Tight and timid: plays few hands and folds to pressure
+    Nit,
+    /// Loose and aggressive: raises most hands and bluffs too often
+    Maniac,
     /// Ignores its cards
     Random,
-    /// Never folds, never bets
-    Station,
 }
 
 fn main() {
@@ -138,12 +145,23 @@ fn play(args: PlayArgs) -> io::Result<()> {
         stack: args.stack * default.big_blind,
         ..default
     };
+    let bot_seed = seed ^ 0xB07;
+    let style = |style| -> Box<dyn Bot> { Box::new(StyleBot::new(style, bot_seed)) };
     let bot: Box<dyn Bot> = match args.bot {
-        BotKind::Solid => Box::new(SolidBot::new(seed ^ 0xB07)),
-        BotKind::Random => Box::new(RandomBot::new(seed ^ 0xB07)),
-        BotKind::Station => Box::new(CallingStation),
+        BotKind::Mystery => {
+            let pick = poker::cards::Rng::new(seed ^ 0x5717E).below(STYLES.len() as u64);
+            style(STYLES[pick as usize])
+        }
+        BotKind::Solid => style(SOLID),
+        BotKind::Station => style(STATION),
+        BotKind::Nit => style(NIT),
+        BotKind::Maniac => style(MANIAC),
+        BotKind::Random => Box::new(RandomBot::new(bot_seed)),
     };
-    let session = Session::new(cfg, bot, seed);
+    let mut session = Session::new(cfg, bot, seed);
+    if matches!(args.bot, BotKind::Mystery) {
+        session.hide_opponent();
+    }
     let llm = llm(args.no_llm || args.coach == CoachMode::Off);
     if args.plain || !interactive() {
         app::plain::play(app::plain::PlayOptions {

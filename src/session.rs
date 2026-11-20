@@ -22,6 +22,71 @@ pub struct Review {
     pub feedback: Feedback,
 }
 
+/// What the opponent has been seen to do over finished and current hands:
+/// the raw material for reading what kind of player it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// Hands finished.
+    pub hands: u32,
+    /// Hands in which it put chips in by choice before the flop.
+    pub played: u32,
+    /// Hands in which it raised before the flop.
+    pub raised: u32,
+    /// Bets and raises after the flop.
+    pub bets: u32,
+    /// Calls after the flop.
+    pub calls: u32,
+    /// Bets it faced after the flop.
+    pub faced: u32,
+    /// Folds to those bets.
+    pub folds: u32,
+}
+
+impl Observed {
+    fn share(part: u32, whole: u32) -> Option<f64> {
+        (whole > 0).then(|| part as f64 / whole as f64)
+    }
+
+    /// Share of hands it plays.
+    pub fn plays(&self) -> Option<f64> {
+        Observed::share(self.played, self.hands)
+    }
+
+    /// Share of hands it raises before the flop.
+    pub fn raises(&self) -> Option<f64> {
+        Observed::share(self.raised, self.hands)
+    }
+
+    /// Share of bets after the flop that it folds to.
+    pub fn folds_to_bets(&self) -> Option<f64> {
+        Observed::share(self.folds, self.faced)
+    }
+
+    /// Bets and raises as a share of its bets, raises and calls after the flop.
+    pub fn aggression(&self) -> Option<f64> {
+        Observed::share(self.bets, self.bets + self.calls)
+    }
+
+    /// What the numbers suggest, once there are enough hands to say.
+    pub fn read(&self) -> Option<&'static str> {
+        if self.hands < 12 {
+            return None;
+        }
+        let (plays, raises) = (self.plays()?, self.raises()?);
+        let folds = self.folds_to_bets().unwrap_or(0.4);
+        let aggression = self.aggression().unwrap_or(0.4);
+        Some(if plays < 0.5 {
+            "tight: plays few hands"
+        } else if raises > 0.6 && aggression > 0.55 {
+            "loose and aggressive: raises and bets a lot"
+        } else if raises < 0.3 && (folds < 0.3 || aggression < 0.3) {
+            "loose and passive: calls a lot, rarely raises"
+        } else {
+            "balanced: no clear lean yet"
+        })
+    }
+}
+
 pub struct Session {
     cfg: Config,
     seed: u64,
@@ -39,6 +104,11 @@ pub struct Session {
     tally: LeakTally,
     grades: HashMap<Grade, u32>,
     given_up: f64,
+    reviewed: u32,
+    observed: Observed,
+    hand_played: bool,
+    hand_raised: bool,
+    hidden: bool,
 }
 
 impl Session {
@@ -65,7 +135,32 @@ impl Session {
             tally: LeakTally::default(),
             grades: HashMap::new(),
             given_up: 0.0,
+            reviewed: 0,
+            observed: Observed::default(),
+            hand_played: false,
+            hand_raised: false,
+            hidden: false,
         }
+    }
+
+    /// Keeps the opponent's name and style from the player until the session
+    /// ends: what kind of player it is has to be read from how it plays.
+    pub fn hide_opponent(&mut self) {
+        self.hidden = true;
+    }
+
+    pub fn opponent_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// What the opponent has been seen to do.
+    pub fn observed(&self) -> Observed {
+        self.observed
+    }
+
+    /// Decisions reviewed in finished hands.
+    pub fn reviewed(&self) -> u32 {
+        self.reviewed
     }
 
     /// Deals the next hand; the button alternates.
@@ -78,6 +173,8 @@ impl Session {
         self.strengths = Strengths::new(self.state.board());
         self.reviews.clear();
         self.recorded = false;
+        self.hand_played = false;
+        self.hand_raised = false;
     }
 
     pub fn state(&self) -> &HandState {
@@ -98,6 +195,15 @@ impl Session {
 
     pub fn bot_name(&self) -> &'static str {
         self.bot.name()
+    }
+
+    /// The opponent as the player may know it: its name, or "mystery".
+    pub fn opponent_label(&self) -> &'static str {
+        if self.hidden {
+            "mystery"
+        } else {
+            self.bot.name()
+        }
     }
 
     pub fn bot(&self) -> &dyn Bot {
@@ -156,11 +262,31 @@ impl Session {
         assert!(self.bot_to_act(), "not the bot's turn");
         let seat = 1 - HERO;
         let action = self.bot.act(&self.state, seat);
+        self.observe(action);
         let (bot, state, strengths) = (&self.bot, &self.state, &self.strengths);
         self.range
             .update(|hole| bot.tendencies(state, hole, strengths).chance_of(action));
         self.apply(action).expect("bots only make legal moves");
         action
+    }
+
+    fn observe(&mut self, action: Action) {
+        let facing = self.state.legal().is_some_and(|l| l.to_call > 0);
+        let o = &mut self.observed;
+        if self.state.street() == crate::game::Street::Preflop {
+            self.hand_played |= matches!(action, Action::Call | Action::RaiseTo(_));
+            self.hand_raised |= matches!(action, Action::RaiseTo(_));
+            return;
+        }
+        if facing {
+            o.faced += 1;
+        }
+        match action {
+            Action::Fold => o.folds += 1,
+            Action::Call => o.calls += 1,
+            Action::RaiseTo(_) => o.bets += 1,
+            Action::Check => {}
+        }
     }
 
     /// The coach's analysis of the player's current decision.
@@ -233,10 +359,14 @@ impl Session {
         self.recorded = true;
         self.total += outcome.net[HERO];
         self.finished += 1;
+        self.observed.hands += 1;
+        self.observed.played += u32::from(self.hand_played);
+        self.observed.raised += u32::from(self.hand_raised);
         for r in &self.reviews {
             self.tally.add(&r.spot, r.action, &r.feedback);
             *self.grades.entry(r.feedback.grade).or_default() += 1;
             self.given_up += r.feedback.loss;
+            self.reviewed += 1;
         }
         Some(HandRecord::from_state(
             &self.state,

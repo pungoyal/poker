@@ -1,0 +1,24 @@
+# Play:    docker compose run --rm poker
+# Replay:  docker compose run --rm poker replay
+# Test:    docker compose run --rm --build test
+services:
+  poker:
+    build:
+      context: .
+      target: runtime
+    image: poker
+    stdin_open: true
+    tty: true
+    volumes:
+      - hands:/data
+
+  test:
+    build:
+      context: .
+      target: test
+    image: poker-test
+    profiles: [test]
+    entrypoint: ["true"]
+
+volumes:
+  hands:

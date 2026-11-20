@@ -22,7 +22,11 @@ impl Bot for CallingStation {
 
     fn act(&mut self, state: &HandState, _seat: usize) -> Action {
         let legal = state.legal().expect("bot asked to act in a finished hand");
-        if legal.to_call > 0 { Action::Call } else { Action::Check }
+        if legal.to_call > 0 {
+            Action::Call
+        } else {
+            Action::Check
+        }
     }
 }
 
@@ -34,7 +38,9 @@ pub struct RandomBot {
 
 impl RandomBot {
     pub fn new(seed: u64) -> RandomBot {
-        RandomBot { rng: Rng::new(seed) }
+        RandomBot {
+            rng: Rng::new(seed),
+        }
     }
 }
 
@@ -76,15 +82,19 @@ mod tests {
     #[test]
     fn bots_only_make_legal_moves() {
         for seed in 0..2_000u64 {
-            let mut bots: [Box<dyn Bot>; 2] =
-                [Box::new(RandomBot::new(seed)), Box::new(RandomBot::new(!seed))];
+            let mut bots: [Box<dyn Bot>; 2] = [
+                Box::new(RandomBot::new(seed)),
+                Box::new(RandomBot::new(!seed)),
+            ];
             if seed % 3 == 0 {
                 bots[1] = Box::new(CallingStation);
             }
             let mut state = HandState::deal(Config::default(), 0, &shuffled_deck(seed));
             while let Some(seat) = state.to_act() {
                 let action = bots[seat].act(&state, seat);
-                state.apply(action).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+                state
+                    .apply(action)
+                    .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
             }
         }
     }

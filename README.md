@@ -15,13 +15,22 @@ you make and explains your mistakes.
 
 ## Running
 
-Rust is pinned through [mise](https://mise.jdx.dev) (`mise install`), or use any recent toolchain.
+With Docker (nothing else needed):
 
 ```sh
-cargo run --release                      # play against the random bot
-cargo run --release -- --bot station     # play against a bot that never folds
-cargo run --release -- --seed 7          # same seed, same cards
-cargo run --release -- replay            # print and verify hands.jsonl
+docker compose run --rm poker                  # play against the random bot
+docker compose run --rm poker --bot station    # play against a bot that never folds
+docker compose run --rm poker --seed 7         # same seed, same cards
+docker compose run --rm poker replay           # print and verify the stored hands
+docker compose build test                      # formatting, lints and tests
+```
+
+Hand histories live in the `hands` Docker volume, so they survive between runs.
+
+Without Docker, Rust is pinned through [mise](https://mise.jdx.dev) (`mise install`):
+
+```sh
+cargo run --release -- --seed 7
 cargo test --release
 ```
 
@@ -35,7 +44,7 @@ c        call                 a        all-in
 h        help                 q        quit
 ```
 
-Finished hands are appended to `hands.jsonl` (`--log` changes the file).
+Finished hands are appended to `hands.jsonl` in the working directory (`--log` changes the file).
 
 ## Layout
 
@@ -45,3 +54,5 @@ Finished hands are appended to `hands.jsonl` (`--log` changes the file).
 - `src/bot.rs`: the `Bot` trait and the placeholder bots
 - `src/history.rs`: hand records, storage and replay verification
 - `src/main.rs`: the command-line interface
+- `Dockerfile`, `compose.yaml`: test and runtime images
+- `.github/`: CI (runs the Docker test stage and a smoke test) and Dependabot updates

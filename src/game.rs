@@ -21,7 +21,11 @@ pub struct Config {
 impl Default for Config {
     /// 100 big blinds deep, with chips fine enough for 0.01bb bet sizes.
     fn default() -> Config {
-        Config { small_blind: 50, big_blind: 100, stack: 10_000 }
+        Config {
+            small_blind: 50,
+            big_blind: 100,
+            stack: 10_000,
+        }
     }
 }
 
@@ -85,9 +89,9 @@ impl Legal {
         match action {
             Action::Fold | Action::Call => self.to_call > 0,
             Action::Check => self.to_call == 0,
-            Action::RaiseTo(amount) => {
-                self.raise.is_some_and(|(min, max)| (min..=max).contains(&amount))
-            }
+            Action::RaiseTo(amount) => self
+                .raise
+                .is_some_and(|(min, max)| (min..=max).contains(&amount)),
         }
     }
 }
@@ -261,7 +265,11 @@ impl HandState {
                 let mut net = [0i64; 2];
                 net[me] = -lost;
                 net[opp] = lost;
-                self.outcome = Some(Outcome { winner: Some(opp), showdown: false, net });
+                self.outcome = Some(Outcome {
+                    winner: Some(opp),
+                    showdown: false,
+                    net,
+                });
                 return Ok(());
             }
             Action::Check => {}
@@ -316,7 +324,11 @@ impl HandState {
             std::cmp::Ordering::Less => (Some(1), [-stake, stake]),
             std::cmp::Ordering::Equal => (None, [0, 0]),
         };
-        self.outcome = Some(Outcome { winner, showdown: true, net });
+        self.outcome = Some(Outcome {
+            winner,
+            showdown: true,
+            net,
+        });
     }
 
     /// A seat's hand strength using all five board cards.
@@ -340,7 +352,12 @@ mod tests {
 
     fn hand_with(cfg: Config, button: usize) -> HandState {
         let c = parse_cards("As Ah Ks Kh 2c 7d 9h Jc 3s").unwrap();
-        HandState::new(cfg, button, [[c[0], c[1]], [c[2], c[3]]], [c[4], c[5], c[6], c[7], c[8]])
+        HandState::new(
+            cfg,
+            button,
+            [[c[0], c[1]], [c[2], c[3]]],
+            [c[4], c[5], c[6], c[7], c[8]],
+        )
     }
 
     fn play(state: &mut HandState, actions: &[Action]) {
@@ -357,7 +374,13 @@ mod tests {
         assert_eq!(state.stack(1), 9_900);
         assert_eq!(state.to_act(), Some(0));
         // The button must complete 50 or raise to at least 200.
-        assert_eq!(state.legal(), Some(Legal { to_call: 50, raise: Some((200, 10_000)) }));
+        assert_eq!(
+            state.legal(),
+            Some(Legal {
+                to_call: 50,
+                raise: Some((200, 10_000))
+            })
+        );
     }
 
     #[test]
@@ -366,7 +389,13 @@ mod tests {
         play(&mut state, &[Call]);
         assert_eq!(state.street(), Street::Preflop);
         assert_eq!(state.to_act(), Some(1));
-        assert_eq!(state.legal(), Some(Legal { to_call: 0, raise: Some((200, 10_000)) }));
+        assert_eq!(
+            state.legal(),
+            Some(Legal {
+                to_call: 0,
+                raise: Some((200, 10_000))
+            })
+        );
         play(&mut state, &[Check]);
         assert_eq!(state.street(), Street::Flop);
         assert_eq!(state.board().len(), 3);
@@ -398,7 +427,13 @@ mod tests {
         assert_eq!(state.legal().unwrap().raise, Some((1_500, 10_000)));
         play(&mut state, &[Call]);
         // A new street starts with a minimum bet of one big blind.
-        assert_eq!(state.legal(), Some(Legal { to_call: 0, raise: Some((100, 9_100)) }));
+        assert_eq!(
+            state.legal(),
+            Some(Legal {
+                to_call: 0,
+                raise: Some((100, 9_100))
+            })
+        );
     }
 
     #[test]
@@ -408,7 +443,10 @@ mod tests {
         assert!(state.apply(RaiseTo(150)).is_err());
         assert!(state.apply(RaiseTo(10_001)).is_err());
         play(&mut state, &[Call]);
-        assert!(state.apply(Fold).is_err(), "no folding when checking is free");
+        assert!(
+            state.apply(Fold).is_err(),
+            "no folding when checking is free"
+        );
         assert!(state.apply(Call).is_err());
         assert_eq!(state.actions().len(), 1);
         assert_eq!(state.pot(), 200);
@@ -419,7 +457,14 @@ mod tests {
         let mut state = hand(0);
         play(&mut state, &[RaiseTo(300), RaiseTo(1_000), Fold]);
         let outcome = state.outcome().unwrap();
-        assert_eq!(outcome, Outcome { winner: Some(1), showdown: false, net: [-300, 300] });
+        assert_eq!(
+            outcome,
+            Outcome {
+                winner: Some(1),
+                showdown: false,
+                net: [-300, 300]
+            }
+        );
         assert_eq!(state.to_act(), None);
         assert_eq!(state.legal(), None);
         assert!(state.apply(Check).is_err());
@@ -433,7 +478,14 @@ mod tests {
         assert_eq!(state.street(), Street::River);
         play(&mut state, &[RaiseTo(400), Call]);
         let outcome = state.outcome().unwrap();
-        assert_eq!(outcome, Outcome { winner: Some(0), showdown: true, net: [650, -650] });
+        assert_eq!(
+            outcome,
+            Outcome {
+                winner: Some(0),
+                showdown: true,
+                net: [650, -650]
+            }
+        );
     }
 
     #[test]
@@ -441,22 +493,45 @@ mod tests {
         let mut state = hand(0);
         play(&mut state, &[RaiseTo(10_000)]);
         // Facing an all-in there is nothing left to raise.
-        assert_eq!(state.legal(), Some(Legal { to_call: 9_900, raise: None }));
+        assert_eq!(
+            state.legal(),
+            Some(Legal {
+                to_call: 9_900,
+                raise: None
+            })
+        );
         play(&mut state, &[Call]);
         assert_eq!(state.board().len(), 5);
         let outcome = state.outcome().unwrap();
-        assert_eq!(outcome, Outcome { winner: Some(0), showdown: true, net: [10_000, -10_000] });
+        assert_eq!(
+            outcome,
+            Outcome {
+                winner: Some(0),
+                showdown: true,
+                net: [10_000, -10_000]
+            }
+        );
     }
 
     #[test]
     fn short_all_in_below_the_minimum_raise_is_allowed() {
-        let cfg = Config { small_blind: 50, big_blind: 100, stack: 350 };
+        let cfg = Config {
+            small_blind: 50,
+            big_blind: 100,
+            stack: 350,
+        };
         let mut state = hand_with(cfg, 0);
         play(&mut state, &[RaiseTo(300)]);
         // A full raise would be to 500, but only 350 is available.
         assert_eq!(state.legal().unwrap().raise, Some((350, 350)));
         play(&mut state, &[RaiseTo(350)]);
-        assert_eq!(state.legal(), Some(Legal { to_call: 50, raise: None }));
+        assert_eq!(
+            state.legal(),
+            Some(Legal {
+                to_call: 50,
+                raise: None
+            })
+        );
         play(&mut state, &[Call]);
         assert_eq!(state.outcome().unwrap().net, [350, -350]);
     }
@@ -472,7 +547,14 @@ mod tests {
             [c[4], c[5], c[6], c[7], c[8]],
         );
         play(&mut state, &[RaiseTo(10_000), Call]);
-        assert_eq!(state.outcome().unwrap(), Outcome { winner: None, showdown: true, net: [0, 0] });
+        assert_eq!(
+            state.outcome().unwrap(),
+            Outcome {
+                winner: None,
+                showdown: true,
+                net: [0, 0]
+            }
+        );
     }
 
     #[test]
@@ -495,7 +577,9 @@ mod tests {
                     options.push(RaiseTo(min + rng.below((max - min) as u64 + 1) as u32));
                 }
                 let action = options[rng.below(options.len() as u64) as usize];
-                state.apply(action).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+                state
+                    .apply(action)
+                    .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
 
                 assert_eq!(state.pot() + state.stack(0) + state.stack(1), 2 * cfg.stack);
                 steps += 1;
@@ -503,7 +587,10 @@ mod tests {
             }
             let outcome = state.outcome().unwrap();
             assert_eq!(outcome.net[0] + outcome.net[1], 0, "seed {seed}");
-            assert!(outcome.net[0].unsigned_abs() <= cfg.stack as u64, "seed {seed}");
+            assert!(
+                outcome.net[0].unsigned_abs() <= cfg.stack as u64,
+                "seed {seed}"
+            );
             if outcome.showdown {
                 assert_eq!(state.board().len(), 5, "seed {seed}");
             }

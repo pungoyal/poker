@@ -26,7 +26,13 @@ pub struct HandRecord {
 
 impl HandRecord {
     /// Captures a finished hand.
-    pub fn from_state(state: &HandState, hand_no: u64, seed: u64, hero: usize, opponent: &str) -> HandRecord {
+    pub fn from_state(
+        state: &HandState,
+        hand_no: u64,
+        seed: u64,
+        hero: usize,
+        opponent: &str,
+    ) -> HandRecord {
         let outcome = state.outcome().expect("cannot record an unfinished hand");
         HandRecord {
             hand_no,
@@ -49,7 +55,9 @@ impl HandRecord {
             if state.to_act() != Some(seat) {
                 return Err(format!("action {i}: seat {seat} acted out of turn"));
             }
-            state.apply(action).map_err(|e| format!("action {i}: {e}"))?;
+            state
+                .apply(action)
+                .map_err(|e| format!("action {i}: {e}"))?;
         }
         match state.outcome() {
             None => Err("recorded actions do not finish the hand".into()),
@@ -108,7 +116,9 @@ mod tests {
             let json = serde_json::to_string(&record).unwrap();
             let parsed: HandRecord = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, record);
-            parsed.replay().unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            parsed
+                .replay()
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         }
     }
 
@@ -125,7 +135,8 @@ mod tests {
 
     #[test]
     fn file_round_trip() {
-        let path = std::env::temp_dir().join(format!("poker-history-test-{}.jsonl", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("poker-history-test-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let records: Vec<HandRecord> = (0..5).map(random_hand).collect();
         for record in &records {

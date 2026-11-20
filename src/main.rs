@@ -97,10 +97,20 @@ impl Table {
     }
 
     fn cards(&self, cards: &[Card]) -> String {
-        cards.iter().map(|c| c.pretty(self.color)).collect::<Vec<_>>().join(" ")
+        cards
+            .iter()
+            .map(|c| c.pretty(self.color))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
-    fn describe(&self, who: &str, action: Action, legal: Legal, state_before: &HandState) -> String {
+    fn describe(
+        &self,
+        who: &str,
+        action: Action,
+        legal: Legal,
+        state_before: &HandState,
+    ) -> String {
         let s = if who == "You" { "" } else { "s" };
         match action {
             Action::Fold => format!("{who} fold{s}."),
@@ -110,7 +120,11 @@ impl Table {
                 let all_in = legal.raise.is_some_and(|(_, max)| amount == max);
                 let suffix = if all_in { " (all-in)" } else { "" };
                 let opp = 1 - state_before.to_act().unwrap();
-                let verb = if state_before.street_commit(opp) == 0 { "bet" } else { "raise" };
+                let verb = if state_before.street_commit(opp) == 0 {
+                    "bet"
+                } else {
+                    "raise"
+                };
                 let to = if verb == "raise" { " to" } else { "" };
                 format!("{who} {verb}{s}{to} {}{suffix}.", self.bb(amount))
             }
@@ -120,13 +134,22 @@ impl Table {
 
 fn play(args: PlayArgs) -> io::Result<()> {
     let seed = args.seed.unwrap_or_else(|| {
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
     });
     if args.stack == 0 {
         return Err(io::Error::other("--stack must be at least 1"));
     }
-    let cfg = Config { stack: args.stack * 100, ..Config::default() };
-    let table = Table { big_blind: cfg.big_blind, color: io::stdout().is_terminal() };
+    let cfg = Config {
+        stack: args.stack * 100,
+        ..Config::default()
+    };
+    let table = Table {
+        big_blind: cfg.big_blind,
+        color: io::stdout().is_terminal(),
+    };
     let mut bot: Box<dyn Bot> = match args.bot {
         BotKind::Random => Box::new(RandomBot::new(seed ^ 0xB07)),
         BotKind::Station => Box::new(CallingStation),
@@ -134,8 +157,14 @@ fn play(args: PlayArgs) -> io::Result<()> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
 
-    println!("Heads-up No-Limit Hold'em vs the {} bot. Session seed {seed}.", bot.name());
-    println!("Stacks reset to {} every hand. Type h for help.", table.bb(cfg.stack));
+    println!(
+        "Heads-up No-Limit Hold'em vs the {} bot. Session seed {seed}.",
+        bot.name()
+    );
+    println!(
+        "Stacks reset to {} every hand. Type h for help.",
+        table.bb(cfg.stack)
+    );
 
     let mut total: i64 = 0;
     let mut finished = 0u64;
@@ -146,8 +175,15 @@ fn play(args: PlayArgs) -> io::Result<()> {
         let button = ((hand_no - 1) % 2) as usize;
         let mut state = HandState::deal(cfg, button, &shuffled_deck(hand_seed));
 
-        let position = if button == HERO { "the button (small blind)" } else { "the big blind" };
-        println!("\n━━ Hand {hand_no} ━━ you are {position} · session {}", table.bb_signed(total));
+        let position = if button == HERO {
+            "the button (small blind)"
+        } else {
+            "the big blind"
+        };
+        println!(
+            "\n━━ Hand {hand_no} ━━ you are {position} · session {}",
+            table.bb_signed(total)
+        );
         println!("Your hand: {}", table.cards(&state.hole(HERO)));
 
         let mut shown_street = Street::Preflop;
@@ -195,7 +231,10 @@ fn play(args: PlayArgs) -> io::Result<()> {
         let result = match outcome.winner {
             None => "Split pot.".to_string(),
             Some(HERO) => format!("You win {}.", table.bb(outcome.net[HERO] as u32)),
-            Some(_) => format!("Bot wins; you lose {}.", table.bb(outcome.net[1 - HERO] as u32)),
+            Some(_) => format!(
+                "Bot wins; you lose {}.",
+                table.bb(outcome.net[1 - HERO] as u32)
+            ),
         };
         println!("{result}");
         total += outcome.net[HERO];
@@ -205,7 +244,10 @@ fn play(args: PlayArgs) -> io::Result<()> {
         history::append(&args.log, &record)?;
     }
 
-    println!("\nSession over: {} across {finished} finished hand(s).", table.bb_signed(total));
+    println!(
+        "\nSession over: {} across {finished} finished hand(s).",
+        table.bb_signed(total)
+    );
     Ok(())
 }
 
@@ -225,7 +267,11 @@ fn prompt(
         options.push("[x] check".to_string());
     }
     if let Some((min, max)) = legal.raise {
-        let verb = if state.street_commit(1 - HERO) == 0 { "[b]et" } else { "[r]aise to" };
+        let verb = if state.street_commit(1 - HERO) == 0 {
+            "[b]et"
+        } else {
+            "[r]aise to"
+        };
         if min == max {
             options.push(format!("[a]ll-in {}", table.bb(max)));
         } else {
@@ -287,7 +333,11 @@ fn parse_command(line: &str, state: &HandState, legal: Legal) -> Result<Input, S
         }
         // Be forgiving: "c" with nothing to call means check.
         "c" | "call" => {
-            if legal.to_call > 0 { Action::Call } else { Action::Check }
+            if legal.to_call > 0 {
+                Action::Call
+            } else {
+                Action::Check
+            }
         }
         "a" | "allin" | "all-in" | "shove" => match legal.raise {
             Some((_, max)) => Action::RaiseTo(max),
@@ -299,16 +349,22 @@ fn parse_command(line: &str, state: &HandState, legal: Legal) -> Result<Input, S
                 return Err("You cannot raise here: your opponent is all-in.".into());
             };
             let Some(text) = argument else {
-                return Err("Give an amount, e.g. 'b 2.5' (big blinds) or 'b 75%' (of the pot).".into());
+                return Err(
+                    "Give an amount, e.g. 'b 2.5' (big blinds) or 'b 75%' (of the pot).".into(),
+                );
             };
             let opp_bet = state.street_commit(1 - state.to_act().unwrap());
             let target = if let Some(percent) = text.strip_suffix('%') {
-                let percent: f64 = percent.parse().map_err(|_| format!("'{text}' is not a percentage."))?;
+                let percent: f64 = percent
+                    .parse()
+                    .map_err(|_| format!("'{text}' is not a percentage."))?;
                 let pot_after_call = (state.pot() + legal.to_call) as f64;
                 opp_bet as f64 + pot_after_call * percent / 100.0
             } else {
-                let amount: f64 =
-                    text.trim_end_matches("bb").parse().map_err(|_| format!("'{text}' is not an amount."))?;
+                let amount: f64 = text
+                    .trim_end_matches("bb")
+                    .parse()
+                    .map_err(|_| format!("'{text}' is not an amount."))?;
                 amount * big_blind
             };
             if !target.is_finite() || target < 0.0 {
@@ -316,7 +372,10 @@ fn parse_command(line: &str, state: &HandState, legal: Legal) -> Result<Input, S
             }
             let target = target.round().min(u32::MAX as f64) as u32;
             if target < min || target > max {
-                let range = Table { big_blind: big_blind as u32, color: false };
+                let range = Table {
+                    big_blind: big_blind as u32,
+                    color: false,
+                };
                 return Err(format!(
                     "That would be {}; the legal range is {} to {}.",
                     range.bb(target),
@@ -335,12 +394,22 @@ fn replay(file: &std::path::Path) -> io::Result<()> {
     let records = history::load(file)?;
     let mut total = 0i64;
     for record in &records {
-        let table = Table { big_blind: record.config.big_blind, color: io::stdout().is_terminal() };
+        let table = Table {
+            big_blind: record.config.big_blind,
+            color: io::stdout().is_terminal(),
+        };
         let state = record.replay().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("hand {}: {e}", record.hand_no))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("hand {}: {e}", record.hand_no),
+            )
         })?;
         let hero = record.hero;
-        let position = if record.button == hero { "button" } else { "big blind" };
+        let position = if record.button == hero {
+            "button"
+        } else {
+            "big blind"
+        };
         println!(
             "\n━━ Hand {} vs {} ━━ you: {} ({position}) · bot: {}",
             record.hand_no,
@@ -369,8 +438,15 @@ fn replay(file: &std::path::Path) -> io::Result<()> {
         total += record.net[hero];
     }
     if let Some(first) = records.first() {
-        let table = Table { big_blind: first.config.big_blind, color: false };
-        println!("\n{} hand(s), all verified. Total {}.", records.len(), table.bb_signed(total));
+        let table = Table {
+            big_blind: first.config.big_blind,
+            color: false,
+        };
+        println!(
+            "\n{} hand(s), all verified. Total {}.",
+            records.len(),
+            table.bb_signed(total)
+        );
     } else {
         println!("No hands in {}.", file.display());
     }
@@ -384,7 +460,12 @@ mod tests {
 
     fn state() -> HandState {
         let c = parse_cards("As Ah Ks Kh 2c 7d 9h Jc 3s").unwrap();
-        HandState::new(Config::default(), HERO, [[c[0], c[1]], [c[2], c[3]]], [c[4], c[5], c[6], c[7], c[8]])
+        HandState::new(
+            Config::default(),
+            HERO,
+            [[c[0], c[1]], [c[2], c[3]]],
+            [c[4], c[5], c[6], c[7], c[8]],
+        )
     }
 
     fn parse(line: &str, state: &HandState) -> Result<Input, String> {
@@ -420,7 +501,11 @@ mod tests {
         s.apply(Action::Check).unwrap();
         // Flop: pot 6bb, checked to us. Half pot is 3bb.
         assert_eq!(parse("b 50%", &s), Ok(Input::Act(Action::RaiseTo(300))));
-        assert_eq!(parse("c", &s), Ok(Input::Act(Action::Check)), "c means check when free");
+        assert_eq!(
+            parse("c", &s),
+            Ok(Input::Act(Action::Check)),
+            "c means check when free"
+        );
         assert!(parse("f", &s).is_err());
     }
 

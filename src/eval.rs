@@ -76,7 +76,11 @@ fn straight_high(mask: u16) -> Option<u8> {
 
 /// The set bits of a rank mask, highest first, limited to `n`.
 fn top_ranks(mask: u16, n: usize) -> Vec<u8> {
-    (0..13u8).rev().filter(|r| mask & (1 << r) != 0).take(n).collect()
+    (0..13u8)
+        .rev()
+        .filter(|r| mask & (1 << r) != 0)
+        .take(n)
+        .collect()
 }
 
 /// Evaluates the best five-card hand among `cards` (five to seven cards).
@@ -100,13 +104,17 @@ pub fn evaluate(cards: &[Card]) -> HandRank {
     }
 
     // Ranks grouped by how many copies we hold, each highest first.
-    let of_count = |n: u8| -> Vec<u8> { (0..13u8).rev().filter(|&r| counts[r as usize] == n).collect() };
+    let of_count = |n: u8| -> Vec<u8> {
+        (0..13u8)
+            .rev()
+            .filter(|&r| counts[r as usize] == n)
+            .collect()
+    };
     let quads = of_count(4);
     let trips = of_count(3);
     let pairs = of_count(2);
-    let without = |exclude: &[u8]| -> u16 {
-        exclude.iter().fold(rank_mask, |mask, r| mask & !(1 << r))
-    };
+    let without =
+        |exclude: &[u8]| -> u16 { exclude.iter().fold(rank_mask, |mask, r| mask & !(1 << r)) };
 
     if let Some(&quad) = quads.first() {
         let kicker = top_ranks(without(&[quad]), 1);
@@ -176,7 +184,10 @@ mod tests {
         for (hand, category) in ladder {
             let value = rank(hand);
             assert_eq!(value.category(), category, "{hand}");
-            assert!(Some(value) > previous, "{hand} should beat the hand before it");
+            assert!(
+                Some(value) > previous,
+                "{hand} should beat the hand before it"
+            );
             previous = Some(value);
         }
     }
@@ -229,7 +240,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(counts, [1_302_540, 1_098_240, 123_552, 54_912, 10_200, 5_108, 3_744, 624, 40]);
+        assert_eq!(
+            counts,
+            [
+                1_302_540, 1_098_240, 123_552, 54_912, 10_200, 5_108, 3_744, 624, 40
+            ]
+        );
     }
 
     #[test]

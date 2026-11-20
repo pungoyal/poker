@@ -10,6 +10,12 @@ pub trait Bot {
     /// Chooses an action for `seat`, which is the player to act.
     /// A bot may only look at its own hole cards and the visible board.
     fn act(&mut self, state: &HandState, seat: usize) -> Action;
+
+    /// How often this bot folds when facing a bet or raise, if that is fixed
+    /// and known. The coach uses it to price bets; `None` means unknown.
+    fn fold_to_bet(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Never folds, never bets: checks when it can and calls otherwise.
@@ -28,7 +34,14 @@ impl Bot for CallingStation {
             Action::Check
         }
     }
+
+    fn fold_to_bet(&self) -> Option<f64> {
+        Some(0.0)
+    }
 }
+
+/// Folds to a bet this often, whatever its cards or the bet size.
+const RANDOM_FOLD: f64 = 0.2;
 
 /// Plays without looking at its cards: mostly passive, with random bets,
 /// raises and folds mixed in.
@@ -65,11 +78,15 @@ impl Bot for RandomBot {
         }
         if legal.to_call == 0 {
             Action::Check
-        } else if roll > 0.8 {
+        } else if roll > 1.0 - RANDOM_FOLD {
             Action::Fold
         } else {
             Action::Call
         }
+    }
+
+    fn fold_to_bet(&self) -> Option<f64> {
+        Some(RANDOM_FOLD)
     }
 }
 

@@ -21,11 +21,12 @@ pub enum Category {
 pub struct HandRank(u32);
 
 impl HandRank {
-    fn new(category: Category, ranks: &[u8]) -> HandRank {
-        debug_assert!(ranks.len() <= 5);
+    /// Packs a category and up to five ranks; any further ranks are ignored.
+    fn new(category: Category, ranks: impl IntoIterator<Item = u8>) -> HandRank {
+        let mut ranks = ranks.into_iter();
         let mut value = category as u32;
-        for i in 0..5 {
-            value = (value << 4) | ranks.get(i).copied().unwrap_or(0) as u32;
+        for _ in 0..5 {
+            value = (value << 4) | ranks.next().unwrap_or(0) as u32;
         }
         HandRank(value)
     }
@@ -103,15 +104,20 @@ pub(crate) fn straight_high(mask: u16) -> Option<u8> {
 }
 
 /// The set bits of a rank mask, highest first, limited to `n`.
-fn top_ranks(mask: u16, n: usize) -> Vec<u8> {
+fn top_ranks(mask: u16, n: usize) -> impl Iterator<Item = u8> {
     (0..13u8)
         .rev()
-        .filter(|r| mask & (1 << r) != 0)
+        .filter(move |r| mask & (1 << r) != 0)
         .take(n)
-        .collect()
+}
+
+/// The highest set bit of a rank mask.
+fn highest(mask: u16) -> Option<u8> {
+    (mask != 0).then(|| 15 - mask.leading_zeros() as u8)
 }
 
 /// Evaluates the best five-card hand among `cards` (five to seven cards).
+/// Allocation-free: the coach calls this about a million times per decision.
 pub fn evaluate(cards: &[Card]) -> HandRank {
     assert!((5..=7).contains(&cards.len()), "need 5 to 7 cards");
 
@@ -128,62 +134,55 @@ pub fn evaluate(cards: &[Card]) -> HandRank {
     if let Some(mask) = flush_mask
         && let Some(high) = straight_high(mask)
     {
-        return HandRank::new(Category::StraightFlush, &[high]);
+        return HandRank::new(Category::StraightFlush, [high]);
     }
 
-    // Ranks grouped by how many copies we hold, each highest first.
-    let of_count = |n: u8| -> Vec<u8> {
-        (0..13u8)
-            .rev()
-            .filter(|&r| counts[r as usize] == n)
-            .collect()
-    };
-    let quads = of_count(4);
-    let trips = of_count(3);
-    let pairs = of_count(2);
-    let without =
-        |exclude: &[u8]| -> u16 { exclude.iter().fold(rank_mask, |mask, r| mask & !(1 << r)) };
+    // Ranks held exactly once, twice, three or four times.
+    let mut of_count = [0u16; 5];
+    for (rank, &count) in counts.iter().enumerate() {
+        of_count[count.min(4) as usize] |= 1 << rank;
+    }
+    let [_, _, pairs, trips, quads] = of_count;
+    let without = |rank: u8| rank_mask & !(1 << rank);
 
-    if let Some(&quad) = quads.first() {
-        let kicker = top_ranks(without(&[quad]), 1);
-        return HandRank::new(Category::Quads, &[quad, kicker[0]]);
+    if let Some(quad) = highest(quads) {
+        let kicker = highest(without(quad)).unwrap_or(0);
+        return HandRank::new(Category::Quads, [quad, kicker]);
     }
 
-    if let Some(&trip) = trips.first() {
+    if let Some(trip) = highest(trips) {
         // The pair half may come from a second set of trips.
-        let pair = trips.get(1).copied().max(pairs.first().copied());
-        if let Some(pair) = pair {
-            return HandRank::new(Category::FullHouse, &[trip, pair]);
+        if let Some(pair) = highest((trips & !(1 << trip)) | pairs) {
+            return HandRank::new(Category::FullHouse, [trip, pair]);
         }
     }
 
     if let Some(mask) = flush_mask {
-        return HandRank::new(Category::Flush, &top_ranks(mask, 5));
+        return HandRank::new(Category::Flush, top_ranks(mask, 5));
     }
 
     if let Some(high) = straight_high(rank_mask) {
-        return HandRank::new(Category::Straight, &[high]);
+        return HandRank::new(Category::Straight, [high]);
     }
 
-    if let Some(&trip) = trips.first() {
-        let mut ranks = vec![trip];
-        ranks.extend(top_ranks(without(&[trip]), 2));
-        return HandRank::new(Category::Trips, &ranks);
+    if let Some(trip) = highest(trips) {
+        let kickers = top_ranks(without(trip), 2);
+        return HandRank::new(Category::Trips, std::iter::once(trip).chain(kickers));
     }
 
-    if pairs.len() >= 2 {
-        let mut ranks = vec![pairs[0], pairs[1]];
-        ranks.extend(top_ranks(without(&[pairs[0], pairs[1]]), 1));
-        return HandRank::new(Category::TwoPair, &ranks);
+    if let Some(high_pair) = highest(pairs) {
+        if let Some(low_pair) = highest(pairs & !(1 << high_pair)) {
+            let kicker = top_ranks(without(high_pair) & !(1 << low_pair), 1);
+            return HandRank::new(
+                Category::TwoPair,
+                [high_pair, low_pair].into_iter().chain(kicker),
+            );
+        }
+        let kickers = top_ranks(without(high_pair), 3);
+        return HandRank::new(Category::Pair, std::iter::once(high_pair).chain(kickers));
     }
 
-    if let Some(&pair) = pairs.first() {
-        let mut ranks = vec![pair];
-        ranks.extend(top_ranks(without(&[pair]), 3));
-        return HandRank::new(Category::Pair, &ranks);
-    }
-
-    HandRank::new(Category::HighCard, &top_ranks(rank_mask, 5))
+    HandRank::new(Category::HighCard, top_ranks(rank_mask, 5))
 }
 
 #[cfg(test)]

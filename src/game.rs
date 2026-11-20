@@ -18,6 +18,28 @@ pub struct Config {
     pub stack: u32,
 }
 
+impl Config {
+    /// Largest stack the engine accepts. Leaves headroom so that the pot plus a
+    /// call or bet (at most four stacks' worth of chips) always fits in a `u32`.
+    pub const MAX_STACK: u32 = u32::MAX / 4;
+
+    /// Checks that the blinds and stack make a playable hand.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.small_blind == 0 || self.small_blind > self.big_blind {
+            Err("the small blind must be positive and no bigger than the big blind".into())
+        } else if self.stack < self.big_blind {
+            Err("the stack must cover the big blind".into())
+        } else if self.stack > Config::MAX_STACK {
+            Err(format!(
+                "the stack may be at most {} chips",
+                Config::MAX_STACK
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl Default for Config {
     /// 100 big blinds deep, with chips fine enough for 0.01bb bet sizes.
     fn default() -> Config {
@@ -150,8 +172,9 @@ impl HandState {
     /// that has the button and the small blind.
     pub fn new(cfg: Config, button: usize, hole: [[Card; 2]; 2], board: [Card; 5]) -> HandState {
         assert!(button < 2);
-        assert!(cfg.small_blind > 0 && cfg.small_blind <= cfg.big_blind);
-        assert!(cfg.stack >= cfg.big_blind, "stack must cover the big blind");
+        if let Err(error) = cfg.validate() {
+            panic!("invalid config: {error}");
+        }
         let mut state = HandState {
             cfg,
             button,

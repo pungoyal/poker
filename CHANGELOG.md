@@ -10,8 +10,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The board and the player's hand drawn as cards on every street, with the
   hand named in plain English and its straight and flush draws.
-- A basic coach: pot odds before a decision and a review after it, with calls
-  and folds priced against equity versus a random hand (`--coach`).
+- A basic coach: pot odds before a decision and a review after it (`--coach`).
+  Every option, including five bet sizes, is priced against the opponent's
+  known fold rate and equity versus a random hand; the review names the best
+  option and the facts that decided it. `--coach full` shows the pick up front.
+- A banner marks the start and end of each hand.
+
+### Fixed
+
+- `--stack` values too large for the chip arithmetic are rejected.
+- `poker replay` reports malformed records as errors instead of panicking, and
+  checks the recorded cards against the recorded seed.
+- Nearby `--seed` values no longer deal overlapping sessions.
+- Straight draws are only reported when they use a hole card, and double
+  gutshots are no longer called open-ended.
+- Preflop equity no longer depends on the order of the hole cards.
+- The session's coaching summary only counts hands that were finished.
+- Hand evaluation no longer allocates, making flop equity much faster.
 - Dual MIT / Apache-2.0 licence, contributor guide, code of conduct and
   security policy.
 - Native CI on Linux, macOS and Windows, an MSRV check (Rust 1.88) and

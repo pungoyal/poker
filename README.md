@@ -26,8 +26,9 @@ playable command-line client and a first version of the coach.
   deals the same cards, so any hand can be replayed and any bug reproduced.
 - **Verified hand histories.** Finished hands are appended to a JSON Lines file
   and `poker replay` re-runs each one through the engine to check it.
-- **A coach at the table.** Pot odds before you decide, and a review after:
-  calls and folds priced in big blinds, bets explained as value or bluff.
+- **A coach at the table.** Pot odds before you decide, and a review after
+  that prices every option (fold, check, call, five bet sizes) against the bot
+  you are playing, names the best one, and explains what decided it.
 - **Pleasant to play.** The board and your hand drawn as cards on every street,
   your hand named in plain English with its draws, amounts in big blinds, bets
   by size (`b 2.5`) or by pot fraction (`b 75%`).
@@ -88,12 +89,18 @@ Options:
   You have a pair of threes.
 ```
 
-Facing a bet, you see the pot odds first. After you act, the coach reviews the
-decision:
+Facing a bet, you see the pot odds first; with `--coach full` you also see your
+equity and the coach's pick. After you act, the coach prices your choice
+against the alternatives and explains the difference:
 
 ```
   Pot odds: call 0.5bb to win 1.5bb → you need to win more than 25% of the time.
-  Coach · Inaccuracy: You needed 25% equity to call 0.5bb into 1.5bb and had about 45%. Folding gave up about 0.4bb.
+You fold.
+  Coach · Inaccuracy:
+    With three-two offsuit before the flop you win 32% against a random hand.
+    Folding is worth about 0bb on average, but calling 0.5bb was worth +0.15bb:
+    about 0.15bb given up. Calling 0.5bb into 1.5bb needs 25% equity and you had
+    32%: enough to continue.
 ```
 
 Two simplifications apply until the solver-backed bot lands. Equity is measured

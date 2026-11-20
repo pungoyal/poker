@@ -191,6 +191,21 @@ impl Table {
         );
     }
 
+    /// A full-width banner so each new hand stands out from the last.
+    fn show_hand_banner(&self, hand_no: u64, session: i64, position: &str) {
+        let rule = "═".repeat(64);
+        println!("\n\n{}", self.paint("1;36", &rule));
+        println!(
+            "{}",
+            self.paint(
+                "1",
+                &format!("  HAND {hand_no}   ·   session {}", self.bb_signed(session))
+            )
+        );
+        println!("  {position}");
+        println!("{}", self.paint("1;36", &rule));
+    }
+
     fn show_feedback(&self, feedback: &Feedback) {
         let code = match feedback.grade {
             Grade::Good => "32",
@@ -199,7 +214,10 @@ impl Table {
             Grade::Mistake | Grade::Blunder => "1;31",
         };
         let label = self.paint(code, &format!("Coach · {}:", feedback.grade.label()));
-        println!("  {label} {}", feedback.text);
+        println!("  {label}");
+        for line in wrap(&feedback.text, 76) {
+            println!("    {line}");
+        }
     }
 }
 
@@ -210,12 +228,16 @@ fn play(args: PlayArgs) -> io::Result<()> {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0)
     });
-    if args.stack == 0 {
-        return Err(io::Error::other("--stack must be at least 1"));
+    let default = Config::default();
+    let max_stack = Config::MAX_STACK / default.big_blind;
+    if !(1..=max_stack).contains(&args.stack) {
+        return Err(io::Error::other(format!(
+            "--stack must be between 1 and {max_stack} big blinds"
+        )));
     }
     let cfg = Config {
-        stack: args.stack * 100,
-        ..Config::default()
+        stack: args.stack * default.big_blind,
+        ..default
     };
     let table = Table {
         big_blind: cfg.big_blind,
@@ -253,9 +275,11 @@ fn play(args: PlayArgs) -> io::Result<()> {
     let mut hand_no = 0u64;
     let mut grades: HashMap<Grade, u32> = HashMap::new();
     let mut total_loss = 0.0;
+    // Each hand's deck seed comes from one stream, so nearby session seeds share no hands.
+    let mut deals = Rng::new(seed);
     'session: while args.hands.is_none_or(|limit| hand_no < limit) {
         hand_no += 1;
-        let hand_seed = Rng::new(seed.wrapping_add(hand_no)).next_u64();
+        let hand_seed = deals.next_u64();
         let button = ((hand_no - 1) % 2) as usize;
         let mut state = HandState::deal(cfg, button, &shuffled_deck(hand_seed));
 
@@ -264,9 +288,11 @@ fn play(args: PlayArgs) -> io::Result<()> {
         } else {
             "you are the big blind: last to act now, first to act after the flop"
         };
-        let title = format!("━━ Hand {hand_no} ━━ session {}", table.bb_signed(total));
-        println!("\n{}\n{position}", table.paint("1", &title));
+        table.show_hand_banner(hand_no, total, position);
         table.show_street(&state);
+
+        // Reviews count towards the session only once the hand is finished.
+        let mut reviews: Vec<(Grade, f64)> = Vec::new();
 
         // Equity only changes when the board does, so compute it once per street.
         let mut equity: Option<(Street, f64)> = None;
@@ -281,13 +307,7 @@ fn play(args: PlayArgs) -> io::Result<()> {
                         (state.street(), coach::equity_vs_random(hole, state.board()))
                     });
                     equity = Some((state.street(), value));
-                    Spot {
-                        big_blind: cfg.big_blind,
-                        pot: state.pot(),
-                        to_call: legal.to_call,
-                        street_commit: state.street_commit(HERO),
-                        equity: value,
-                    }
+                    Spot::from_state(&state, value, bot.name(), bot.fold_to_bet())
                 });
                 if let Some(spot) = &spot {
                     if legal.to_call > 0 {
@@ -303,6 +323,16 @@ fn play(args: PlayArgs) -> io::Result<()> {
                             "  Your equity against a random hand: {:.0}%.",
                             spot.equity * 100.0
                         );
+                        if let Some(&(best, ev)) = spot.ranked(None).first() {
+                            println!(
+                                "  {}",
+                                table.dim(&format!(
+                                    "Coach's pick: {} ({}).",
+                                    spot.phrase(best),
+                                    coach::fmt_bb_signed(ev, cfg.big_blind)
+                                ))
+                            );
+                        }
                     }
                 }
                 let Some(action) = prompt(&mut input, &table, &state, legal)? else {
@@ -313,8 +343,7 @@ fn play(args: PlayArgs) -> io::Result<()> {
                 if let Some(spot) = &spot {
                     let feedback = coach::review(spot, action);
                     table.show_feedback(&feedback);
-                    *grades.entry(feedback.grade).or_default() += 1;
-                    total_loss += feedback.loss;
+                    reviews.push((feedback.grade, feedback.loss));
                 }
             } else {
                 let action = bot.act(&state, seat);
@@ -356,8 +385,13 @@ fn play(args: PlayArgs) -> io::Result<()> {
             ),
         };
         println!("{result}");
+        println!("{}", table.dim(&format!("── end of hand {hand_no} ──")));
         total += outcome.net[HERO];
         finished += 1;
+        for (grade, loss) in reviews {
+            *grades.entry(grade).or_default() += 1;
+            total_loss += loss;
+        }
 
         let record = HandRecord::from_state(&state, hand_no, hand_seed, HERO, bot.name());
         history::append(&args.log, &record)?;
@@ -371,7 +405,7 @@ fn play(args: PlayArgs) -> io::Result<()> {
         let count = |grade: Grade| grades.get(&grade).copied().unwrap_or(0);
         let reviewed: u32 = grades.values().sum();
         println!(
-            "Coach: {reviewed} decision(s) reviewed · inaccuracies {} · mistakes {} · blunders {} · about {} given up.",
+            "Coach: {reviewed} decision(s) reviewed in finished hands · inaccuracies {} · mistakes {} · blunders {} · about {} given up.",
             count(Grade::Inaccuracy),
             count(Grade::Mistake),
             count(Grade::Blunder),
@@ -379,6 +413,21 @@ fn play(args: PlayArgs) -> io::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Splits text into lines of at most `width` characters, breaking at spaces.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 /// Asks the player for an action until a legal one is entered.
@@ -645,6 +694,12 @@ mod tests {
             "c means check when free"
         );
         assert!(parse("f", &s).is_err());
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces() {
+        assert_eq!(wrap("one two three four", 9), ["one two", "three", "four"]);
+        assert_eq!(wrap("", 9), Vec::<String>::new());
     }
 
     #[test]

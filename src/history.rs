@@ -1,7 +1,7 @@
 //! Hand records: everything needed to replay a finished hand exactly.
 //! Records are stored one JSON object per line.
 
-use crate::cards::Card;
+use crate::cards::{Card, shuffled_deck};
 use crate::game::{Action, Config, HandState};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -48,8 +48,28 @@ impl HandRecord {
         }
     }
 
-    /// Replays the recorded actions and checks they reproduce the recorded result.
+    /// Checks the record describes a real deal: valid stakes and seats, and the
+    /// cards the recorded seed shuffles to. Anything that passes is safe to replay.
+    pub fn validate(&self) -> Result<(), String> {
+        self.config.validate()?;
+        if self.button > 1 || self.hero > 1 {
+            return Err(format!(
+                "seats must be 0 or 1 (button {}, hero {})",
+                self.button, self.hero
+            ));
+        }
+        let deck = shuffled_deck(self.seed);
+        let hole = [[deck[0], deck[1]], [deck[2], deck[3]]];
+        if self.hole != hole || self.board[..] != deck[4..9] {
+            return Err(format!("cards do not match seed {}", self.seed));
+        }
+        Ok(())
+    }
+
+    /// Validates the record, replays the recorded actions and checks they
+    /// reproduce the recorded result.
     pub fn replay(&self) -> Result<HandState, String> {
+        self.validate()?;
         let mut state = HandState::new(self.config, self.button, self.hole, self.board);
         for (i, &(seat, action)) in self.actions.iter().enumerate() {
             if state.to_act() != Some(seat) {
@@ -130,6 +150,23 @@ mod tests {
 
         let mut record = random_hand(7);
         record.actions.pop();
+        assert!(record.replay().is_err());
+
+        // Swapped or duplicated cards no longer match the seed.
+        let mut record = random_hand(7);
+        record.hole[0].swap(0, 1);
+        record.hole[1][0] = record.hole[0][0];
+        assert!(record.replay().unwrap_err().contains("seed"));
+
+        // Malformed fields are errors, not panics.
+        let mut record = random_hand(7);
+        record.hero = 2;
+        assert!(record.replay().is_err());
+        let mut record = random_hand(7);
+        record.button = 5;
+        assert!(record.replay().is_err());
+        let mut record = random_hand(7);
+        record.config.small_blind = 0;
         assert!(record.replay().is_err());
     }
 

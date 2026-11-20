@@ -1,0 +1,40 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        The command you ran (ideally with `--seed`) and the actions you typed,
+        or the offending line from `hands.jsonl`.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: How do you run it?
+      options:
+        - Docker
+        - cargo on Linux
+        - cargo on macOS
+        - cargo on Windows
+        - Prebuilt binary
+    validations:
+      required: true

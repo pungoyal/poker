@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>A heads-up No-Limit Hold'em trainer for the terminal.</strong><br>
-  Play, see your cards and odds on every street, and get your decisions reviewed in big blinds.
+  Play a realistic opponent with a coach that teaches you how to decide.
 </p>
 
 <p align="center">
@@ -13,26 +13,40 @@
 
 ---
 
-The goal is a near-unbeatable opponent plus a coach that tells you what each of
-your mistakes cost and why. Today the project ships the foundation: a complete,
-deterministic rules engine, a fast hand evaluator, replayable hand histories, a
-playable command-line client and a first version of the coach.
+A trainer for getting better at heads-up No-Limit Hold'em. You play a sound,
+realistic opponent at a full-screen table, and a coach teaches you to make each
+decision: before you act it asks you to read the opponent's hand, estimate your
+equity and work out the price; after you act it tells you what your choice was
+worth, what was best and why. Your mistakes are tracked across sessions, and
+`poker drill` replays the costliest ones as practice.
 
 ## Features
 
-- **Correct rules.** Blinds, min-raises, all-ins, showdowns and split pots are
-  modelled as a deterministic state machine with tests for the edge cases.
-- **Reproducible sessions.** Every deal comes from a seed: the same `--seed`
-  deals the same cards, so any hand can be replayed and any bug reproduced.
-- **Verified hand histories.** Finished hands are appended to a JSON Lines file
-  and `poker replay` re-runs each one through the engine to check it.
-- **A coach at the table.** Pot odds before you decide, and a review after
-  that prices every option (fold, check, call, five bet sizes) against the bot
-  you are playing, names the best one, and explains what decided it.
-- **Pleasant to play.** The board and your hand drawn as cards on every street,
-  your hand named in plain English with its draws, amounts in big blinds, bets
-  by size (`b 2.5`) or by pot fraction (`b 75%`).
-- **Runs anywhere.** A single binary, or one `docker compose` command.
+- **A realistic opponent.** The default `solid` bot plays like a sound regular:
+  a range of starting hands that narrows as bets get bigger, value bets,
+  semi-bluffs, continuation bets and balanced bluffs, one bet size for value
+  and bluffs alike. It folds to about half of postflop bets, as a good player
+  does, so the lessons carry over to real tables.
+- **A coach that reads the opponent.** Every bot publishes its strategy, so the
+  coach narrows the bot's likely hands with each action it takes (Bayes' rule)
+  and measures your equity against those hands, not against any two cards. It
+  prices every option (fold, check, call and five bet sizes) by how often the
+  bot folds and how strong the hands are that continue, and when you check out
+  of position it includes the bot betting into you.
+- **Questions before you act.** In the default `teach` mode the coach asks you
+  to read the bot's range, estimate your equity and work out the pot odds,
+  checks each answer, and then reviews the decision you make.
+- **An LLM coach.** With an Anthropic API key, Claude does the talking: it asks
+  the questions, answers yours (press `/` at any time) and explains every
+  review in its own words, working only from the engine's exact numbers.
+- **Leaks and drills.** `poker leaks` finds your costliest recurring mistakes
+  across sessions; `poker drill` replays them as practice spots.
+- **A full-screen table.** Cards on a felt, stacks and chips, an action log, a
+  coach panel, one-key actions and a bet slider with pot-sized presets. A plain
+  line mode is kept for pipes and transcripts (`--plain`).
+- **Correct, reproducible and verifiable.** A deterministic rules engine, a fast
+  evaluator, seeded deals (`--seed`), and hand histories that `poker replay`
+  re-runs and checks against their seed.
 
 ## Quick start
 
@@ -47,7 +61,15 @@ With Rust 1.88 or newer:
 
 ```sh
 cargo install --git https://github.com/pungoyal/poker
-poker --seed 7
+poker
+```
+
+For the LLM coach, set an API key first (otherwise the coach uses the engine's
+own words):
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+poker
 ```
 
 Prebuilt binaries for Linux, macOS and Windows are attached to each
@@ -55,100 +77,149 @@ Prebuilt binaries for Linux, macOS and Windows are attached to each
 
 ## Playing
 
-Both players start every hand with 100 big blinds and the button alternates.
-At the prompt, amounts are in big blinds:
+```
+ ♠ poker   Hand 1  ·  vs solid  ·  session 0bb                                      seed 7
+╭──────────────────────────────────────────────────────────╮╭ Coach ─────────────────────────╮
+│                 BOT   big blind  ·  83.8bb               ││Coach Think about what the solid│
+│                      ╳╳╳╳ ╳╳╳╳                           ││bot has done. Are its likely    │
+│                      ╳╳╳╳ ╳╳╳╳                           ││hands mostly [s]trong, mostly   │
+│                      ╳╳╳╳ ╳╳╳╳                           ││[w]eak, or [m]ixed?             │
+│                        ● 9.2bb                           ││                                │
+│                                                          ││You s                           │
+│               Q    4    A    ┌──┐ ┌──┐                   ││                                │
+│                ♣    ♦    ♥   │  │ │  │                   ││Coach Right. Its hands now:     │
+│                  Q    4    A └──┘ └──┘                   ││strong 80% · medium 1% · draws  │
+│                 Pot 23.2bb   ·   Flop                    ││0% · weak 18%, so mostly strong.│
+│                                                          ││                                │
+│                      2    3                              ││                                │
+│                       ♠    ♣                             ││                                │
+│                         2    3                           ││                                │
+│               ▶  YOU   button  ·  93bb                   ││                                │
+│       ace high · gutshot straight draw (4 outs)          ││                                │
+╰──────────────────────────────────────────────────────────╯╰────────────────────────────────╯
+ f  fold   c  call 9.2bb   b  bet/raise   1-5  sizes   a  all-in 93bb   /  ask coach   ?  help
+```
 
-| Input | Action | Input | Action |
+Both players start every hand with 100 big blinds and the button alternates.
+
+| Key | Action | Key | Action |
 | --- | --- | --- | --- |
-| `f` | fold | `b 2.5` | bet or raise to 2.5bb in total |
-| `x` | check | `b 75%` | bet 75% of the pot |
-| `c` | call | `a` | all-in |
-| `h` | help | `q` | quit |
+| `f` | fold | `b` or `r` | bet or raise: pick a size, then enter |
+| `c` / `x` | call / check | `1`–`5` | a third, half, three quarters, the pot, all-in |
+| `a` | all-in | `←` `→` | adjust the size, or type an amount in bb |
+| `/` | ask the coach anything | `esc` | skip the coach's questions and act |
+| `n` | show or hide the numbers | `space` | next hand |
+| `?` | help | `q` | leave the table |
 
 Options:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bot <random\|station>` | `random` | Opponent: a random bot, or a calling station that never folds |
-| `--coach <off\|after\|full>` | `after` | Coach output: none, a review after each decision, or also your equity before you decide |
+| `--bot <solid\|random\|station>` | `solid` | Opponent: a sound regular, a bot that ignores its cards, or a calling station |
+| `--coach <teach\|full\|after\|off>` | `teach` | Questions before each decision and a review after; the numbers before and a review after; a review only; or nothing |
 | `--seed <n>` | time-based | Seed for cards and the bot; the same seed deals the same session |
 | `--stack <bb>` | `100` | Starting stack in big blinds, reset every hand |
 | `--hands <n>` | unlimited | Stop after this many hands |
 | `--log <file>` | `hands.jsonl` | File that finished hands are appended to |
-
-`poker replay [file]` prints the stored hands and verifies each one.
+| `--plain` | off | Line-by-line interface; also used automatically when input is piped |
+| `--no-llm` | off | Use the engine's own words even if an API key is set |
 
 ### The coach
 
-```
-── Flop · pot 5bb ──
-   Board               Your hand
-  ┌────┐┌────┐┌────┐  ┌────┐┌────┐
-  │ 9♥ ││ 8♦ ││ 3♣ │  │ K♦ ││ 3♦ │
-  └────┘└────┘└────┘  └────┘└────┘
-  You have a pair of threes.
-```
-
-Facing a bet, you see the pot odds first; with `--coach full` you also see your
-equity and the coach's pick. After you act, the coach prices your choice
-against the alternatives and explains the difference:
+The poker engine works out every number; the coach's job is to teach with them.
+After each decision you get a grade and the reasons that decided the spot:
 
 ```
-  Pot odds: call 0.5bb to win 1.5bb → you need to win more than 25% of the time.
-You fold.
-  Coach · Inaccuracy:
-    With three-two offsuit before the flop you win 32% against a random hand.
-    Folding is worth about 0bb on average, but calling 0.5bb was worth +0.15bb:
-    about 0.15bb given up. Calling 0.5bb into 1.5bb needs 25% equity and you had
-    32%: enough to continue.
+  Coach · Mistake:
+    With three-two offsuit before the flop you win 28% against the hands the bot
+    is likely to hold. Calling 5bb is worth about -1.08bb on average, but
+    folding was worth 0bb: about 1.08bb given up. Its actions so far point to
+    these hands: strong 80% · medium 1% · draws 0% · weak 18%. Calling 5bb into
+    9bb needs 36% equity and you had 28%: just short.
 ```
 
-Two simplifications apply until the solver-backed bot lands. Equity is measured
-against a random hand, which is exact for the placeholder bots because their
-play ignores their cards. Prices assume no further betting, so they are
-estimates before the river.
+With `ANTHROPIC_API_KEY` set (or `ANTHROPIC_AUTH_TOKEN`), the coach is Claude
+(`claude-opus-5-5` by default; change it with `POKER_COACH_MODEL`). It receives
+the engine's facts for each decision (the hand so far, equity, pot odds, the
+bot's likely hands, the value of every option and your recurring leaks) and is
+told to use only those numbers. Replies stream into the coach panel. Each
+request sends the current hand's conversation to the Anthropic API and is
+billed to your key; nothing else leaves your machine.
 
-With Docker, hand histories live in the `hands` volume and survive between runs:
+Values are averages over the bot's likely hands and assume the hand is checked
+down afterwards, apart from the bot's reply to a check, so before the river
+they are estimates.
+
+### Leaks and drills
+
+Every finished hand is appended to `hands.jsonl`. Between sessions:
 
 ```sh
-docker compose run --rm poker --bot station --seed 7
-docker compose run --rm poker replay
+poker leaks            # your costliest recurring mistakes, with the principle that fixes each
+poker drill            # replay the 10 costliest past mistakes as practice spots
+poker replay           # print and verify every stored hand
+```
+
+```
+Leaks, costliest first:
+  1. checking when betting was better on the flop — 21 time(s), about 54.69bb
+     Bet your strong hands and some of your draws: checking lets worse hands
+     see cards for free and wins smaller pots.
+  2. calling when folding was better on the river — 6 time(s), about 46.59bb
+     A bet narrows the bettor's hands towards strong ones. Judge your equity
+     against what they bet with, not against any two cards.
+```
+
+With Docker, hand histories live in the `hands` volume and survive between
+runs, and the API key is passed through from your shell:
+
+```sh
+docker compose run --rm poker --seed 7
+docker compose run --rm poker leaks
+docker compose run --rm poker drill
 ```
 
 ## Roadmap
 
 | Step | What | State |
 | --- | --- | --- |
-| 1 | Rules engine, hand evaluator, hand records, playable CLI against placeholder bots | ✅ done |
-| 1b | Basic coach: hand reading, pot odds, equity against a random hand, priced calls and folds | ✅ done |
-| 2 | Solver-backed bot: preflop ranges, live postflop solving | 🚧 next |
-| 3 | Full coach: exact cost of every decision from the solver, with plain-language explanations | planned |
-| 4 | Leak tracking across sessions, reviews and drills | planned |
+| 1 | Rules engine, hand evaluator, hand records, playable CLI | ✅ done |
+| 2 | A realistic opponent, and a coach that reads its range and prices every option | ✅ done |
+| 3 | Teaching: questions before each decision, an LLM coach, leak tracking and drills | ✅ done |
+| 4 | Solver-backed opponent: game-theory-optimal play for exact costs at higher stakes | planned |
+| 5 | Opponent profiles: practise against loose, tight and aggressive styles | planned |
 
 Ideas and help on any of these are welcome: see [Contributing](#contributing).
 
 ## Architecture
 
-The crate is a pure library (no I/O, no clocks, no global state) with a thin
-command-line client on top.
+The library is pure (no I/O, no clocks, no global state); the terminal client
+sits on top.
 
 | Module | Responsibility |
 | --- | --- |
 | [`cards`](src/cards.rs) | Cards, the deck and the seeded shuffle |
-| [`eval`](src/eval.rs) | Best five-card hand out of five to seven cards |
+| [`eval`](src/eval.rs) | Best five-card hand out of five to seven cards; straight and flush draws |
 | [`game`](src/game.rs) | Betting rules for one hand as a deterministic state machine |
-| [`bot`](src/bot.rs) | The `Bot` trait and the placeholder bots |
-| [`coach`](src/coach.rs) | Hand descriptions, equity, pot odds and decision reviews |
+| [`range`](src/range.rs) | The 1326 two-card combinations, hand strength on a board, ranges and equity against them |
+| [`bot`](src/bot.rs) | The `Bot` trait, the solid bot and the placeholder bots |
+| [`coach`](src/coach.rs) | Spot analysis, option values, reviews, questions and the facts given to the LLM |
+| [`analysis`](src/analysis.rs) | Re-running the coach over past hands; leaks and drill spots |
+| [`session`](src/session.rs) | A session against a bot: deals, the bot's range, score and leaks |
 | [`history`](src/history.rs) | Hand records, storage and replay verification |
-| [`main`](src/main.rs) | The terminal client |
+| [`app`](src/app) | The terminal client: full-screen table, plain mode and the LLM coach |
 
-Writing a new opponent means implementing one trait:
+A bot implements one trait. `tendencies` describes its strategy (its chances
+of folding, calling and raising with any hand), which is what lets the coach
+read its range:
 
 ```rust
 pub trait Bot {
     fn name(&self) -> &'static str;
     /// Chooses an action for `seat`, which is the player to act.
     fn act(&mut self, state: &HandState, seat: usize) -> Action;
+    /// How it plays the player to act in `state` when holding `hole`.
+    fn tendencies(&self, state: &HandState, hole: [Card; 2], strengths: &Strengths) -> Mix;
 }
 ```
 

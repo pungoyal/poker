@@ -82,5 +82,5 @@ jobs:
 
       - name: Smoke test
         run: |
-          printf 'c\nx\nx\nx\nx\n' | docker run --rm -i -v hands:/data poker:ci --seed 7 --hands 1
+          printf 'c\nx\nx\nx\nx\n' | docker run --rm -i -v hands:/data poker:ci --seed 7 --hands 1 --coach after
           docker run --rm -v hands:/data poker:ci replay

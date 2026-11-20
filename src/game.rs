@@ -163,6 +163,10 @@ pub struct HandState {
     /// Size of the last bet or raise on this street; the next raise must be at least as big.
     last_raise: u32,
     acted: [bool; 2],
+    /// Bets and raises made on the current street.
+    raises: u32,
+    /// The last player to bet or raise, on any street.
+    aggressor: Option<usize>,
     actions: Vec<(usize, Action)>,
     outcome: Option<Outcome>,
 }
@@ -188,6 +192,8 @@ impl HandState {
             to_act: button,
             last_raise: cfg.big_blind,
             acted: [false; 2],
+            raises: 0,
+            aggressor: None,
             actions: Vec::new(),
             outcome: None,
         };
@@ -240,6 +246,16 @@ impl HandState {
     /// All chips in the middle, including bets on the current street.
     pub fn pot(&self) -> u32 {
         self.total_commit[0] + self.total_commit[1]
+    }
+
+    /// Bets and raises made on the current street (the blinds do not count).
+    pub fn raises(&self) -> u32 {
+        self.raises
+    }
+
+    /// The last player to bet or raise, on any street: who has the initiative.
+    pub fn aggressor(&self) -> Option<usize> {
+        self.aggressor
     }
 
     pub fn actions(&self) -> &[(usize, Action)] {
@@ -300,6 +316,8 @@ impl HandState {
             Action::RaiseTo(amount) => {
                 let raise_size = amount - self.street_commit[opp];
                 self.last_raise = self.last_raise.max(raise_size);
+                self.raises += 1;
+                self.aggressor = Some(me);
                 self.put_in(me, amount - self.street_commit[me]);
             }
         }
@@ -327,6 +345,7 @@ impl HandState {
                 self.board_len = next.board_cards();
                 self.street_commit = [0; 2];
                 self.acted = [false; 2];
+                self.raises = 0;
                 self.last_raise = self.cfg.big_blind;
                 self.to_act = 1 - self.button;
             }

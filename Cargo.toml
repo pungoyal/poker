@@ -7,7 +7,6 @@ description = "Heads-up No-Limit Hold'em trainer for the terminal: a determinist
 authors = ["Puneet Goyal"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/pungoyal/poker"
-homepage = "https://github.com/pungoyal/poker"
 readme = "README.md"
 keywords = ["poker", "holdem", "game", "cli", "solver"]
 categories = ["games", "command-line-utilities", "simulation"]
@@ -15,8 +14,10 @@ exclude = [".github/", "Dockerfile", "compose.yaml", ".dockerignore", "mise.toml
 
 [dependencies]
 clap = { version = "4.6.9", features = ["derive"] }
+ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+ureq = "3.5.2"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -92,7 +92,7 @@ pub fn rank_plural(rank: u8) -> String {
 
 /// Highest card of the best straight in a 13-bit rank mask, if any.
 /// The wheel (A-2-3-4-5) counts as five-high.
-pub(crate) fn straight_high(mask: u16) -> Option<u8> {
+fn straight_high(mask: u16) -> Option<u8> {
     for high in (4..=12u8).rev() {
         let window = 0b11111 << (high - 4);
         if mask & window == window {
@@ -183,6 +183,109 @@ pub fn evaluate(cards: &[Card]) -> HandRank {
     }
 
     HandRank::new(Category::HighCard, top_ranks(rank_mask, 5))
+}
+
+/// A drawing hand with cards to come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Draw {
+    Flush,
+    OpenEnded,
+    DoubleGutshot,
+    Gutshot,
+}
+
+impl Draw {
+    pub fn name(self) -> &'static str {
+        match self {
+            Draw::Flush => "flush draw",
+            Draw::OpenEnded => "open-ended straight draw",
+            Draw::DoubleGutshot => "double gutshot straight draw",
+            Draw::Gutshot => "gutshot straight draw",
+        }
+    }
+
+    /// Cards that complete the draw.
+    pub fn outs(self) -> u32 {
+        match self {
+            Draw::Flush => 9,
+            Draw::OpenEnded | Draw::DoubleGutshot => 8,
+            Draw::Gutshot => 4,
+        }
+    }
+}
+
+/// The straight and flush draws a player holds with `hole` on a flop or turn.
+/// Only draws that use a hole card count: a draw on the board is everyone's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Draws {
+    pub flush: bool,
+    pub straight: Option<Draw>,
+}
+
+impl Draws {
+    pub fn find(hole: [Card; 2], board: &[Card]) -> Draws {
+        let mut found = Draws::default();
+        if !(3..=4).contains(&board.len()) {
+            return found;
+        }
+        let mut cards = [hole[0]; 6];
+        cards[..board.len()].copy_from_slice(board);
+        cards[board.len()] = hole[0];
+        cards[board.len() + 1] = hole[1];
+        let cards = &cards[..board.len() + 2];
+        let category = evaluate(cards).category();
+
+        if category < Category::Flush {
+            found.flush = (0..4).any(|suit| {
+                cards.iter().filter(|c| c.suit() == suit).count() == 4
+                    && hole.iter().any(|c| c.suit() == suit)
+            });
+        }
+        if category < Category::Straight {
+            let rank_mask = |cards: &[Card]| cards.iter().fold(0u16, |m, c| m | 1 << c.rank());
+            let board_mask = rank_mask(board);
+            let mask = board_mask | rank_mask(&hole);
+            // Ranks that give us a better straight than the board alone would make.
+            let completing = (0..13)
+                .filter(|r| straight_high(mask | 1 << r) > straight_high(board_mask | 1 << r))
+                .fold(0u16, |m, r| m | 1 << r);
+            found.straight = match completing.count_ones() {
+                0 => None,
+                1 => Some(Draw::Gutshot),
+                _ if open_ended(mask, completing) => Some(Draw::OpenEnded),
+                _ => Some(Draw::DoubleGutshot),
+            };
+        }
+        found
+    }
+
+    pub fn list(self) -> impl Iterator<Item = Draw> {
+        self.flush
+            .then_some(Draw::Flush)
+            .into_iter()
+            .chain(self.straight)
+    }
+
+    /// Cards that complete at least one draw, not counting any card twice.
+    pub fn outs(self) -> u32 {
+        let straight = self.straight.map_or(0, Draw::outs);
+        if self.flush {
+            // About a quarter of the straight outs are also flush outs.
+            9 + straight - straight / 4
+        } else {
+            straight
+        }
+    }
+}
+
+/// Four ranks in a row with a completing card at each end. Rank -1 is a low ace.
+fn open_ended(mask: u16, completing: u16) -> bool {
+    let bit = |r: i32| -> u16 { if r < 0 { 1 << 12 } else { 1 << r } };
+    (0..=8).any(|low: i32| {
+        (low..low + 4).all(|r| mask & bit(r) != 0)
+            && completing & bit(low - 1) != 0
+            && completing & bit(low + 4) != 0
+    })
 }
 
 #[cfg(test)]

@@ -1,15 +1,17 @@
 //! The coach: facts about a spot (hand strength, draws, equity, pot odds)
 //! and a review of the decision taken.
 //!
-//! Equity here is measured against a random opponent hand. That is exact for
-//! the placeholder bots, whose actions do not depend on their cards, and it
-//! will be replaced by solver ranges for the real bot. Decision values treat
-//! the hand as checked down afterwards: they ignore betting on later streets.
-//! Bets are priced only against opponents whose folding frequency is known.
+//! Equity is measured against the hands the opponent is likely to hold: its
+//! range, narrowed by Bayes' rule from its known strategy each time it acts.
+//! Bets are priced by how often that range folds and how strong the part
+//! that continues is. Decision values treat the hand as checked down
+//! afterwards: they ignore betting on later streets.
 
+use crate::bot::Bot;
 use crate::cards::{Card, Rng};
-use crate::eval::{Category, HandRank, evaluate, rank_name, rank_plural, straight_high};
+use crate::eval::{Draws, HandRank, evaluate, rank_name, rank_plural};
 use crate::game::{Action, HandState, Street};
+use crate::range::{COMBOS, Profile, Range, Strengths, combo, equity_vs_ranges};
 
 /// Formats a chip amount in big blinds, e.g. "2.5bb".
 pub fn fmt_bb(chips: f64, big_blind: u32) -> String {
@@ -64,56 +66,13 @@ pub fn describe_hand(hole: [Card; 2], board: &[Card]) -> String {
     parts.join(" · ")
 }
 
-/// Draws to a straight or flush with cards still to come. Only draws that
-/// use a hole card count: a draw on the board is everyone's draw.
+/// Draws to a straight or flush with cards still to come, e.g.
+/// "flush draw (9 outs)". Only draws that use a hole card count.
 pub fn draws(hole: [Card; 2], board: &[Card]) -> Vec<String> {
-    let mut found = Vec::new();
-    if !(3..=4).contains(&board.len()) {
-        return found;
-    }
-    let mut cards = board.to_vec();
-    cards.extend(hole);
-    let category = evaluate(&cards).category();
-
-    if category < Category::Flush {
-        for suit in 0..4 {
-            let count = cards.iter().filter(|c| c.suit() == suit).count();
-            if count == 4 && hole.iter().any(|c| c.suit() == suit) {
-                found.push("flush draw (9 outs)".to_string());
-            }
-        }
-    }
-    if category < Category::Straight {
-        let board_mask = rank_mask(board);
-        let mask = board_mask | rank_mask(&hole);
-        // Ranks that give us a straight better than the one the board alone would make.
-        let completing = (0..13)
-            .filter(|r| straight_high(mask | 1 << r) > straight_high(board_mask | 1 << r))
-            .fold(0u16, |m, r| m | 1 << r);
-        match completing.count_ones() {
-            0 => {}
-            1 => found.push("gutshot straight draw (4 outs)".to_string()),
-            _ if open_ended(mask, completing) => {
-                found.push("open-ended straight draw (8 outs)".to_string())
-            }
-            _ => found.push("double gutshot straight draw (8 outs)".to_string()),
-        }
-    }
-    found
-}
-
-fn rank_mask(cards: &[Card]) -> u16 {
-    cards.iter().fold(0u16, |mask, c| mask | 1 << c.rank())
-}
-
-/// Four ranks in a row with a completing card at each end. Rank -1 is a low ace.
-fn open_ended(mask: u16, completing: u16) -> bool {
-    let bit = |r: i32| -> u16 { if r < 0 { 1 << 12 } else { 1 << r } };
-    (0..=8).any(|low: i32| {
-        (low..low + 4).all(|r| mask & bit(r) != 0)
-            && completing & bit(low - 1) != 0
-            && completing & bit(low + 4) != 0
-    })
+    Draws::find(hole, board)
+        .list()
+        .map(|d| format!("{} ({} outs)", d.name(), d.outs()))
+        .collect()
 }
 
 /// Chance of winning at showdown against a random hand, counting ties as half.
@@ -211,10 +170,38 @@ fn simulate_preflop(hole: [Card; 2], rest: &[Card]) -> f64 {
     total / SAMPLES as f64
 }
 
+/// How the opponent answers a bet or raise of one size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Response {
+    pub amount: u32,
+    /// Chance that the opponent folds.
+    pub fold: f64,
+    /// The player's equity against the hands that continue.
+    pub equity_called: f64,
+}
+
+/// What the opponent does after the player checks, when it still has to act
+/// on this street: bet, or check behind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckResponse {
+    /// Chance that the opponent bets.
+    pub bet: f64,
+    /// What it bets to.
+    pub bet_to: u32,
+    /// The player's equity against the hands that bet.
+    pub equity_vs_bets: f64,
+    /// The player's equity against the hands that check behind.
+    pub equity_vs_checks: f64,
+}
+
 /// The situation the player faced when choosing an action.
 #[derive(Clone, Debug)]
 pub struct Spot {
     pub big_blind: u32,
+    /// The player's cards.
+    pub hole: [Card; 2],
+    /// The board cards face up.
+    pub board: Vec<Card>,
     pub street: Street,
     /// Chips in the middle before acting, including the bet being faced.
     pub pot: u32,
@@ -225,63 +212,207 @@ pub struct Spot {
     pub opp_commit: u32,
     /// Smallest and largest legal `RaiseTo`, if raising is possible.
     pub raise: Option<(u32, u32)>,
-    /// Chance of winning at showdown, from [`equity_vs_random`].
+    /// Chance of winning at showdown against the opponent's likely hands.
     pub equity: f64,
     /// The player's hand, from [`made_hand`].
     pub made: String,
     /// The player's draws, from [`draws`].
     pub draws: Vec<String>,
+    /// Cards that complete the player's draws.
+    pub outs: u32,
     /// The opponent's name, e.g. "calling station".
     pub opponent: &'static str,
-    /// How often the opponent folds to a bet or raise, if known.
-    pub fold_to_bet: Option<f64>,
+    /// What the opponent's likely hands are made of, once its actions have
+    /// narrowed them from any two cards.
+    pub read: Option<Profile>,
+    /// How the opponent answers each priced bet or raise size.
+    pub responses: Vec<Response>,
+    /// How the opponent answers a check, when it acts next on this street.
+    pub check_response: Option<CheckResponse>,
 }
 
 impl Spot {
-    /// The spot for the player to act in `state`.
-    pub fn from_state(
+    /// Analyses the spot for the player to act in `state` against `bot`,
+    /// whose likely hands are `range`. `strengths` must be for the current
+    /// board. Prices fold, check, call and the standard bet sizes, plus the
+    /// raise to `extra` if given.
+    pub fn analyse(
         state: &HandState,
-        equity: f64,
-        opponent: &'static str,
-        fold_to_bet: Option<f64>,
+        bot: &dyn Bot,
+        range: &Range,
+        strengths: &Strengths,
+        extra: Option<u32>,
     ) -> Spot {
         let me = state.to_act().expect("no spot once the hand is over");
         let legal = state.legal().expect("no spot once the hand is over");
         let (hole, board) = (state.hole(me), state.board());
-        Spot {
+        let mut spot = Spot {
             big_blind: state.config().big_blind,
+            hole,
+            board: board.to_vec(),
             street: state.street(),
             pot: state.pot(),
             to_call: legal.to_call,
             street_commit: state.street_commit(me),
             opp_commit: state.street_commit(1 - me),
             raise: legal.raise,
-            equity,
+            equity: 0.0,
             made: made_hand(hole, board),
             draws: draws(hole, board),
-            opponent,
-            fold_to_bet,
+            outs: Draws::find(hole, board).outs(),
+            opponent: bot.name(),
+            read: None,
+            responses: Vec::new(),
+            check_response: None,
+        };
+
+        let mut amounts: Vec<u32> = spot
+            .options()
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::RaiseTo(amount) => Some(amount),
+                _ => None,
+            })
+            .collect();
+        if let Some(amount) = extra
+            && legal.allows(Action::RaiseTo(amount))
+            && !amounts.contains(&amount)
+        {
+            amounts.push(amount);
         }
+
+        // For each size: how often the range folds, and what continues.
+        let visible = |c: [Card; 2]| c.iter().all(|x| !hole.contains(x) && !board.contains(x));
+        let mut folds = Vec::new();
+        let mut continuing: Vec<Vec<f64>> = Vec::new();
+        for &amount in &amounts {
+            let mut after = state.clone();
+            after
+                .apply(Action::RaiseTo(amount))
+                .expect("priced sizes are legal");
+            let mut weights = vec![0.0; COMBOS];
+            let (mut folded, mut total) = (0.0, 0.0);
+            for (i, &weight) in range.weights().iter().enumerate() {
+                let cards = combo(i);
+                if weight <= 0.0 || !visible(cards) {
+                    continue;
+                }
+                let mix = bot.tendencies(&after, cards, strengths);
+                folded += weight * mix.fold;
+                total += weight;
+                weights[i] = weight * (1.0 - mix.fold);
+            }
+            folds.push(if total > 0.0 { folded / total } else { 0.0 });
+            continuing.push(weights);
+        }
+
+        // Out of position, a check hands the bot the chance to bet.
+        let mut check_split: Option<(f64, u32, Vec<f64>, Vec<f64>)> = None;
+        if legal.to_call == 0 {
+            let mut after = state.clone();
+            after.apply(Action::Check).expect("checking is legal");
+            if after.to_act() == Some(1 - me)
+                && after.street() == state.street()
+                && after.legal().is_some_and(|l| l.raise.is_some())
+            {
+                let bet_to = crate::bot::solid_raise_size(&after);
+                let mut bets = vec![0.0; COMBOS];
+                let mut checks = vec![0.0; COMBOS];
+                let (mut betting, mut total) = (0.0, 0.0);
+                for (i, &weight) in range.weights().iter().enumerate() {
+                    let cards = combo(i);
+                    if weight <= 0.0 || !visible(cards) {
+                        continue;
+                    }
+                    let mix = bot.tendencies(&after, cards, strengths);
+                    betting += weight * mix.aggressive;
+                    total += weight;
+                    bets[i] = weight * mix.aggressive;
+                    checks[i] = weight * (1.0 - mix.aggressive);
+                }
+                let chance = if total > 0.0 { betting / total } else { 0.0 };
+                check_split = Some((chance, bet_to, bets, checks));
+            }
+        }
+
+        let mut ranges: Vec<&[f64]> = vec![range.weights()];
+        ranges.extend(continuing.iter().map(Vec::as_slice));
+        if let Some((_, _, bets, checks)) = &check_split {
+            ranges.push(bets);
+            ranges.push(checks);
+        }
+        let equities = equity_vs_ranges(hole, board, &ranges);
+        if let Some((bet, bet_to, _, _)) = check_split {
+            let n = equities.len();
+            spot.check_response = Some(CheckResponse {
+                bet,
+                bet_to,
+                equity_vs_bets: equities[n - 2],
+                equity_vs_checks: equities[n - 1],
+            });
+        }
+        spot.equity = equities[0];
+        spot.responses = amounts
+            .iter()
+            .zip(folds)
+            .zip(&equities[1..=amounts.len()])
+            .map(|((&amount, fold), &equity_called)| Response {
+                amount,
+                fold,
+                equity_called,
+            })
+            .collect();
+        spot.read = (!range.is_uniform()).then(|| range.profile(strengths, &hole));
+        spot
+    }
+
+    /// How the opponent answers a raise to `amount`, if that size was priced.
+    pub fn response(&self, amount: u32) -> Option<Response> {
+        self.responses.iter().copied().find(|r| r.amount == amount)
     }
 
     /// Average chips won from here on by taking `action`, if the hand is then
-    /// checked down. `None` for a bet when the opponent's fold rate is unknown.
+    /// checked down; after a check out of position, the opponent's bet and
+    /// the player's best reply (call or fold) are included. `None` for a bet
+    /// size that was not priced.
     pub fn ev(&self, action: Action) -> Option<f64> {
         let (equity, pot) = (self.equity, self.pot as f64);
         match action {
             Action::Fold => Some(0.0),
-            Action::Check => Some(equity * pot),
+            Action::Check => Some(match self.check_response {
+                Some(c) => {
+                    c.bet * self.call_after_check(&c).max(0.0)
+                        + (1.0 - c.bet) * c.equity_vs_checks * pot
+                }
+                None => equity * pot,
+            }),
             Action::Call => {
                 let call = self.to_call as f64;
                 Some(equity * (pot + call) - call)
             }
             Action::RaiseTo(amount) => {
-                let fold = self.fold_to_bet?;
+                let r = self.response(amount)?;
                 let risk = (amount - self.street_commit) as f64;
                 let called = (amount - self.opp_commit) as f64;
-                Some(fold * pot + (1.0 - fold) * (equity * (pot + risk + called) - risk))
+                Some(
+                    r.fold * pot
+                        + (1.0 - r.fold) * (r.equity_called * (pot + risk + called) - risk),
+                )
             }
         }
+    }
+
+    /// Value of calling the opponent's bet after checking to it.
+    fn call_after_check(&self, c: &CheckResponse) -> f64 {
+        let pot = self.pot as f64;
+        let added = c.bet_to.saturating_sub(self.opp_commit) as f64;
+        let call = c.bet_to.saturating_sub(self.street_commit) as f64;
+        c.equity_vs_bets * (pot + added + call) - call
+    }
+
+    /// Share of the final pot a call must win: zero when nothing is owed.
+    pub fn pot_odds(&self) -> f64 {
+        pot_odds(self.pot, self.to_call)
     }
 
     /// The legal actions worth comparing: fold or check, call, and bets of a
@@ -464,7 +595,7 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
     }
 }
 
-/// "With a pair of fives and a flush draw on the turn (41% against a random hand)."
+/// "With a pair of fives and a flush draw on the turn you win 41% against ..."
 fn situation(spot: &Spot) -> String {
     let mut hand = spot.made.clone();
     if !spot.draws.is_empty() {
@@ -487,8 +618,13 @@ fn situation(spot: &Spot) -> String {
         Street::Preflop => "before the flop".to_string(),
         street => format!("on the {}", street.name().to_lowercase()),
     };
+    let against = if spot.read.is_some() {
+        "against the hands the bot is likely to hold"
+    } else {
+        "against a random hand"
+    };
     format!(
-        "With {hand} {when} you win {} against a random hand.",
+        "With {hand} {when} you win {} {against}.",
         percent(spot.equity)
     )
 }
@@ -502,7 +638,10 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
 
     // Fold or call: pot odds decide it.
     if spot.to_call > 0 && involves(|a| matches!(a, Action::Fold | Action::Call)) {
-        let need = pot_odds(spot.pot, spot.to_call);
+        if let Some(read) = spot.read {
+            why.push(format!("Its actions so far point to these hands: {read}."));
+        }
+        let need = spot.pot_odds();
         let margin = equity - need;
         let verdict = if margin.abs() < 0.03 {
             ": a near coin-flip, so neither choice costs much"
@@ -534,63 +673,132 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
         }
     }
 
-    // Betting: how the opponent responds decides it.
+    // Betting: how the opponent answers decides it.
     if involves(is_bet) {
         let bet = if is_bet(action) { action } else { best };
-        let Action::RaiseTo(amount) = bet else {
-            unreachable!()
-        };
-        let risk = (amount - spot.street_commit) as f64;
-        let needed = risk / (risk + pot);
-        match spot.fold_to_bet {
-            Some(0.0) => why.push(if equity >= 0.5 {
-                format!(
-                    "The {} bot never folds and calls with any two cards, so while you are ahead every extra chip in the pot is profit: bigger is better.",
-                    spot.opponent
-                )
+        if let Action::RaiseTo(amount) = bet
+            && let Some(r) = spot.response(amount)
+        {
+            let risk = (amount - spot.street_commit) as f64;
+            let needed = risk / (risk + pot);
+            let called = percent(r.equity_called);
+            if r.fold < 0.005 {
+                why.push(if r.equity_called >= 0.5 {
+                    format!(
+                        "The {} bot does not fold here, and you beat the hands that call {called} of the time, so every extra chip in the pot is profit.",
+                        spot.opponent
+                    )
+                } else {
+                    format!(
+                        "The {} bot does not fold here, so a bet cannot win the pot by itself; called, you win only {called}.",
+                        spot.opponent
+                    )
+                });
             } else {
-                format!(
-                    "The {} bot never folds, so a bet cannot win the pot by itself; called, you win only {} of the time.",
-                    spot.opponent,
-                    percent(equity)
-                )
-            }),
-            Some(fold) => {
-                let have = percent(equity);
-                let support = match (fold >= needed, equity >= 0.5) {
-                    (true, true) => "it profits from the folds alone, and you are ahead when called too.".to_string(),
-                    (true, false) => "it profits from the folds alone, before your cards even count.".to_string(),
-                    (false, true) => format!("folds won't pay for it, but called you win {have} of the time, so the calls are where the money is."),
-                    (false, false) => format!("folds alone won't pay for it, so the rest must come from the {have} of the time you win when called."),
+                let support = match (r.fold >= needed, r.equity_called >= 0.5) {
+                    (true, true) => {
+                        "it profits from the folds alone, and you are ahead when called too."
+                    }
+                    (true, false) => {
+                        "it profits from the folds alone, even though you are usually behind when called."
+                    }
+                    (false, true) => {
+                        "folds alone won't pay for it, but you are ahead of the hands that call, so the calls are where the money is."
+                    }
+                    (false, false) => {
+                        "folds alone won't pay for it, and you are usually behind the hands that call."
+                    }
                 };
                 why.push(format!(
-                    "The {} bot folds about {} of the time whatever the size, and otherwise plays on with any two cards. {} risks {} to win {}, which needs folds {} of the time on its own; {support}",
-                    spot.opponent,
-                    percent(fold),
+                    "{} makes the bot fold about {} of the time; against the hands it continues with you win {called}. Risking {} to win {} needs folds {} of the time on its own: {support}",
                     capitalise(&spot.phrase(bet)),
+                    percent(r.fold),
                     spot.bb(risk),
                     spot.bb(pot),
                     percent(needed),
                 ));
             }
-            None => {}
         }
     }
 
     // Wrong bet size.
     if let (Action::RaiseTo(chosen), Action::RaiseTo(better)) = (action, best)
         && chosen != better
+        && let (Some(c), Some(b)) = (spot.response(chosen), spot.response(better))
     {
         why.push(if better > chosen {
-            "Size up: you are ahead when called, so the bigger the pot the better.".to_string()
+            if b.equity_called >= 0.5 {
+                "Size up: you are ahead of the hands that continue, so a bigger pot pays more.".to_string()
+            } else {
+                format!(
+                    "Size up: the bigger bet folds out more ({} against {}).",
+                    percent(b.fold),
+                    percent(c.fold)
+                )
+            }
+        } else if c.equity_called < 0.5 {
+            format!(
+                "Size down: the smaller bet gets folds {} of the time against {}, and risks less when a better hand calls.",
+                percent(b.fold),
+                percent(c.fold)
+            )
         } else {
-            "Size down: a small bet gets the same folds while risking less when called by better hands.".to_string()
+            format!(
+                "Size down: a smaller bet keeps more worse hands in ({} continue rather than {}).",
+                percent(1.0 - b.fold),
+                percent(1.0 - c.fold)
+            )
         });
     }
 
+    // Out of position, what a check leads to.
+    if (action == Action::Check || best == Action::Check)
+        && let Some(c) = spot.check_response
+    {
+        let reply = if spot.call_after_check(&c) > 0.0 {
+            "so you could call it profitably"
+        } else {
+            "so you would have to fold to it"
+        };
+        why.push(format!(
+            "If you check, the bot bets about {} of the time; against those bets you win {}, {reply}. When it checks behind you win {}.",
+            percent(c.bet),
+            percent(c.equity_vs_bets),
+            percent(c.equity_vs_checks),
+        ));
+    }
+
     // Checked when betting was better.
-    if action == Action::Check && is_bet(best) {
-        why.push("Checking lets a worse hand see the showdown for free.".to_string());
+    if action == Action::Check
+        && let Action::RaiseTo(amount) = best
+        && let Some(r) = spot.response(amount)
+    {
+        why.push(if r.equity_called >= 0.5 {
+            "Checking lets worse hands see the showdown for free when they would have paid a bet."
+                .to_string()
+        } else {
+            format!(
+                "Checking gives up a pot the bot would often surrender: it folds {} to {}.",
+                percent(r.fold),
+                spot.phrase(best)
+            )
+        });
+    }
+
+    // Bet when checking or calling was better.
+    if let Action::RaiseTo(amount) = action
+        && !is_bet(best)
+        && best != Action::Fold
+        && let Some(r) = spot.response(amount)
+    {
+        why.push(if r.equity_called < 0.5 {
+            "This bet folds out the hands you beat and gets called by the ones that beat you.".to_string()
+        } else {
+            format!(
+                "The hands that fold ({}) are mostly ones you already beat, so the bet wins less than letting them reach showdown.",
+                percent(r.fold)
+            )
+        });
     }
 
     if spot.street == Street::River && spot.to_call > 0 {
@@ -602,7 +810,7 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
     why
 }
 
-/// A bet against an opponent whose fold rate is unknown: describe, don't price.
+/// A bet size that was not priced: describe it, don't grade it.
 fn unpriced_bet(spot: &Spot, action: Action) -> String {
     let Action::RaiseTo(amount) = action else {
         unreachable!("only bets go unpriced")
@@ -623,6 +831,259 @@ fn unpriced_bet(spot: &Spot, action: Action) -> String {
             spot.bb(pot),
             percent(risk / (risk + pot)),
         )
+    }
+}
+
+/// The facts behind a decision, as JSON for a language model to explain.
+/// Amounts are in big blinds and chances in percent, rounded for reading.
+/// With `action`, it includes the review of the action taken.
+pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
+    use serde_json::json;
+    let bb = |chips: f64| (chips / spot.big_blind as f64 * 100.0).round() / 100.0;
+    let pct = |x: f64| (x * 1000.0).round() / 10.0;
+    let cards = |cs: &[Card]| {
+        cs.iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let options: Vec<serde_json::Value> = spot
+        .ranked(action)
+        .into_iter()
+        .map(|(a, ev)| {
+            let mut option = json!({ "action": spot.phrase(a), "ev_bb": bb(ev) });
+            if let Action::RaiseTo(amount) = a
+                && let Some(r) = spot.response(amount)
+            {
+                option["opponent_folds_pct"] = json!(pct(r.fold));
+                option["equity_when_called_pct"] = json!(pct(r.equity_called));
+            }
+            option
+        })
+        .collect();
+    let mut facts = json!({
+        "street": spot.street.name(),
+        "opponent": spot.opponent,
+        "hero_cards": cards(&spot.hole),
+        "hero_starting_hand": crate::range::hand_class(spot.hole),
+        "board": cards(&spot.board),
+        "hero_hand": spot.made,
+        "hero_draws": spot.draws,
+        "pot_bb": bb(spot.pot as f64),
+        "to_call_bb": bb(spot.to_call as f64),
+        "equity_pct": pct(spot.equity),
+        "equity_against": if spot.read.is_some() { "the opponent's likely hands given its actions" } else { "a random hand (the opponent's actions so far say nothing about its cards)" },
+        "options_best_first": options,
+    });
+    if let Some(c) = spot.check_response {
+        facts["if_hero_checks"] = json!({
+            "opponent_bets_pct": pct(c.bet),
+            "opponent_bets_to_bb": bb(c.bet_to as f64),
+            "hero_equity_vs_those_bets_pct": pct(c.equity_vs_bets),
+            "hero_equity_when_it_checks_behind_pct": pct(c.equity_vs_checks),
+            "hero_best_reply_to_the_bet": if spot.call_after_check(&c) > 0.0 { "call" } else { "fold" },
+        });
+    }
+    if spot.to_call > 0 {
+        facts["pot_odds_needed_pct"] = json!(pct(spot.pot_odds()));
+    }
+    if let Some(read) = spot.read {
+        facts["opponent_range_pct"] = json!({
+            "strong": pct(read.strong),
+            "medium": pct(read.medium),
+            "draws": pct(read.draws),
+            "weak": pct(read.weak),
+        });
+    }
+    if let Some(action) = action {
+        let feedback = review(spot, action);
+        facts["hero_action"] = json!(spot.phrase(action));
+        facts["grade"] = json!(feedback.grade.label());
+        facts["loss_bb"] = json!(bb(feedback.loss));
+    }
+    facts
+}
+
+/// A question the coach asks before a decision, to practise the steps of
+/// making it: read the opponent's hands, estimate equity, work out the price.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Question {
+    /// What do the opponent's likely hands look like?
+    Read(Profile),
+    /// How often do you win at showdown?
+    Equity,
+    /// What share of the pot does a call need to win?
+    PotOdds,
+}
+
+/// The questions worth asking in `spot`, in the order to ask them.
+pub fn questions(spot: &Spot) -> Vec<Question> {
+    let mut asked = Vec::new();
+    if let Some(read) = spot.read {
+        asked.push(Question::Read(read));
+    }
+    asked.push(Question::Equity);
+    if spot.to_call > 0 {
+        asked.push(Question::PotOdds);
+    }
+    asked
+}
+
+/// How a strong range reads: mostly strong, mostly weak, or a mix.
+fn read_label(read: &Profile) -> &'static str {
+    if read.strong >= 0.4 {
+        "strong"
+    } else if read.weak + read.draws >= 0.6 {
+        "weak"
+    } else {
+        "mixed"
+    }
+}
+
+impl Question {
+    /// The question as shown to the player, with how to answer.
+    pub fn prompt(&self, spot: &Spot) -> String {
+        match self {
+            Question::Read(_) => format!(
+                "Think about what the {} bot has done. Are its likely hands mostly [s]trong, mostly [w]eak, or [m]ixed?",
+                spot.opponent
+            ),
+            Question::Equity => {
+                let against = if spot.read.is_some() {
+                    "those hands"
+                } else {
+                    "a random hand"
+                };
+                format!("How often does your hand win at showdown against {against}? Answer in %.")
+            }
+            Question::PotOdds => format!(
+                "You must call {} into a pot of {}. What share of the final pot must you win to break even? Answer in %.",
+                spot.bb(spot.to_call as f64),
+                spot.bb(spot.pot as f64)
+            ),
+        }
+    }
+
+    /// Checks an answer. `Err` asks for another try with a hint on the format.
+    pub fn check(&self, spot: &Spot, answer: &str) -> Result<Feedback, String> {
+        let answer = answer.trim().to_lowercase();
+        match self {
+            Question::Read(read) => {
+                let guess = match answer.chars().next() {
+                    Some('s') => "strong",
+                    Some('w') => "weak",
+                    Some('m') => "mixed",
+                    _ => return Err("Answer s, w or m.".into()),
+                };
+                let actual = read_label(read);
+                let right = guess == actual;
+                let why = if spot.to_call > 0 {
+                    "A bet or raise removes most of the hands that would have folded or checked, so ranges get stronger with each bet."
+                } else {
+                    "Checking and calling keep weaker hands in a range: strong hands usually bet or raise."
+                };
+                Ok(Feedback {
+                    grade: if right {
+                        Grade::Good
+                    } else {
+                        Grade::Inaccuracy
+                    },
+                    loss: 0.0,
+                    text: format!(
+                        "{} Its hands now: {read}, so mostly {actual}. {why}",
+                        if right { "Right." } else { "Not quite." }
+                    ),
+                })
+            }
+            Question::Equity => {
+                let guess = parse_percent(&answer)?;
+                let actual = spot.equity;
+                let off = guess - actual;
+                let mut text = if off.abs() <= 0.07 {
+                    format!("Good estimate: it is {}.", percent(actual))
+                } else {
+                    format!(
+                        "It is {}: you {} by {} points.",
+                        percent(actual),
+                        if off > 0.0 {
+                            "overestimated"
+                        } else {
+                            "underestimated"
+                        },
+                        (off.abs() * 100.0).round()
+                    )
+                };
+                if spot.read.is_some() && off > 0.07 {
+                    text.push_str(
+                        " Measure against the hands it plays this way, not against any two cards.",
+                    );
+                }
+                if spot.outs > 0 && spot.street != Street::River {
+                    let (rule, cards) = if spot.street == Street::Flop {
+                        (4, "two cards")
+                    } else {
+                        (2, "one card")
+                    };
+                    text.push_str(&format!(
+                        " With {} outs and {cards} to come, the rule of {rule} says your draw alone hits about {}% of the time.",
+                        spot.outs,
+                        spot.outs * rule
+                    ));
+                }
+                let grade = match off.abs() {
+                    x if x <= 0.07 => Grade::Good,
+                    x if x <= 0.15 => Grade::Close,
+                    _ => Grade::Inaccuracy,
+                };
+                Ok(Feedback {
+                    grade,
+                    loss: 0.0,
+                    text,
+                })
+            }
+            Question::PotOdds => {
+                let guess = parse_percent(&answer)?;
+                let need = spot.pot_odds();
+                let total = spot.pot + spot.to_call;
+                let working = format!(
+                    "call ÷ (pot + call) = {} ÷ {} = {}",
+                    spot.bb(spot.to_call as f64),
+                    spot.bb(total as f64),
+                    percent(need)
+                );
+                let right = (guess - need).abs() <= 0.03;
+                Ok(Feedback {
+                    grade: if right {
+                        Grade::Good
+                    } else {
+                        Grade::Inaccuracy
+                    },
+                    loss: 0.0,
+                    text: if right {
+                        format!("Right: {working}.")
+                    } else {
+                        format!(
+                            "It is {working}. Your call becomes part of the pot you are trying to win."
+                        )
+                    },
+                })
+            }
+        }
+    }
+}
+
+/// Parses "35", "35%" or "0.35" as a share between 0 and 1.
+fn parse_percent(answer: &str) -> Result<f64, String> {
+    let number: f64 = answer
+        .trim_end_matches('%')
+        .trim()
+        .parse()
+        .map_err(|_| "Answer with a number, e.g. 35.".to_string())?;
+    let share = if number > 1.0 { number / 100.0 } else { number };
+    if (0.0..=1.0).contains(&share) {
+        Ok(share)
+    } else {
+        Err("Answer between 0 and 100.".into())
     }
 }
 
@@ -731,8 +1192,11 @@ mod tests {
     }
 
     fn spot(pot: u32, to_call: u32, equity: f64) -> Spot {
+        let c = parse_cards("5d 5h Ac 4h Kd").unwrap();
         Spot {
             big_blind: 100,
+            hole: [c[0], c[1]],
+            board: c[2..].to_vec(),
             street: Street::Flop,
             pot,
             to_call,
@@ -742,17 +1206,34 @@ mod tests {
             equity,
             made: "a pair of fives".to_string(),
             draws: Vec::new(),
+            outs: 0,
             opponent: "random",
-            fold_to_bet: None,
+            read: None,
+            responses: Vec::new(),
+            check_response: None,
         }
     }
 
-    fn betting(pot: u32, equity: f64, fold_to_bet: Option<f64>) -> Spot {
-        Spot {
+    /// A spot where every bet size gets folds `fold` of the time, and the
+    /// hands that continue are like any other (card-blind opponents).
+    fn betting(pot: u32, equity: f64, fold: f64) -> Spot {
+        let mut spot = Spot {
             raise: Some((100, 10_000)),
-            fold_to_bet,
             ..spot(pot, 0, equity)
-        }
+        };
+        spot.responses = spot
+            .options()
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::RaiseTo(amount) => Some(Response {
+                    amount,
+                    fold,
+                    equity_called: equity,
+                }),
+                _ => None,
+            })
+            .collect();
+        spot
     }
 
     #[test]
@@ -793,18 +1274,18 @@ mod tests {
     #[test]
     fn bets_are_priced_against_the_opponents_fold_rate() {
         // Against a calling station, a strong hand should bet as big as it can.
-        let station = betting(400, 0.8, Some(0.0));
+        let station = betting(400, 0.8, 0.0);
         let (best, _) = station.ranked(None)[0];
         assert_eq!(best, Action::RaiseTo(10_000));
-        let small = review(&station, Action::RaiseTo(100));
+        let small = review(&station, Action::RaiseTo(133));
         assert!(small.loss > 0.0);
         assert!(small.text.contains("Size up"), "{}", small.text);
         let slowplay = review(&station, Action::Check);
         assert!(slowplay.grade != Grade::Good);
-        assert!(slowplay.text.contains("never folds"), "{}", slowplay.text);
+        assert!(slowplay.text.contains("does not fold"), "{}", slowplay.text);
 
         // A weak hand should not bluff a player who never folds.
-        let weak = betting(400, 0.2, Some(0.0));
+        let weak = betting(400, 0.2, 0.0);
         assert_eq!(review(&weak, Action::Check).grade, Grade::Good);
         let bluff = review(&weak, Action::RaiseTo(400));
         assert!(bluff.grade != Grade::Good);
@@ -812,20 +1293,139 @@ mod tests {
 
         // A bot that folds 20% to any size: a small bluff beats a big one.
         // Betting 200 into 400 needs folds 200 / 600 = 33% of the time.
-        let folder = betting(400, 0.2, Some(0.2));
+        let folder = betting(400, 0.2, 0.2);
         let half = review(&folder, Action::RaiseTo(200));
         assert!(half.text.contains("33%"), "{}", half.text);
         assert!(half.text.contains("Size down"), "{}", half.text);
     }
 
     #[test]
-    fn unknown_opponents_get_unpriced_notes() {
-        let value = review(&betting(400, 0.8, None), Action::RaiseTo(300));
+    fn unpriced_sizes_get_notes() {
+        let value = review(&spot(400, 0, 0.8), Action::RaiseTo(300));
         assert_eq!(value.grade, Grade::Note);
         assert!(value.text.contains("value bet"), "{}", value.text);
-        let bluff = review(&betting(400, 0.2, None), Action::RaiseTo(200));
+        let bluff = review(&spot(400, 0, 0.2), Action::RaiseTo(200));
         assert!(bluff.text.contains("33%"), "{}", bluff.text);
         assert_eq!(bluff.loss, 0.0);
+    }
+
+    #[test]
+    fn questions_check_the_steps_of_a_decision() {
+        let facing = spot(300, 100, 0.40);
+        assert_eq!(
+            questions(&facing),
+            vec![Question::Equity, Question::PotOdds]
+        );
+        let odds = Question::PotOdds;
+        assert_eq!(odds.check(&facing, "25").unwrap().grade, Grade::Good);
+        assert_eq!(odds.check(&facing, "0.25").unwrap().grade, Grade::Good);
+        let wrong = odds.check(&facing, "33%").unwrap();
+        assert_eq!(wrong.grade, Grade::Inaccuracy);
+        assert!(wrong.text.contains("1bb ÷ 4bb = 25%"), "{}", wrong.text);
+        assert!(odds.check(&facing, "lots").is_err());
+        assert!(odds.check(&facing, "250").is_err());
+
+        let equity = Question::Equity.check(&facing, "70").unwrap();
+        assert_eq!(equity.grade, Grade::Inaccuracy);
+        assert!(
+            equity.text.contains("overestimated by 30"),
+            "{}",
+            equity.text
+        );
+
+        let read = Profile {
+            strong: 0.5,
+            medium: 0.3,
+            draws: 0.1,
+            weak: 0.1,
+        };
+        let narrowed = Spot {
+            read: Some(read),
+            ..facing
+        };
+        assert_eq!(questions(&narrowed)[0], Question::Read(read));
+        assert_eq!(
+            Question::Read(read).check(&narrowed, "s").unwrap().grade,
+            Grade::Good
+        );
+        assert_eq!(
+            Question::Read(read).check(&narrowed, "weak").unwrap().grade,
+            Grade::Inaccuracy
+        );
+    }
+
+    #[test]
+    fn checks_out_of_position_price_the_bots_bet() {
+        use crate::bot::SolidBot;
+        use crate::game::Config;
+        let c = parse_cards("Ah Td Kc Qc 9s 7d 2h Jc 3s").unwrap();
+        let hole = [[c[0], c[1]], [c[2], c[3]]];
+        let board = [c[4], c[5], c[6], c[7], c[8]];
+        let bot = SolidBot::new(0);
+        // Seat 0 is the big blind: first to act on the flop.
+        let mut state = HandState::new(Config::default(), 1, hole, board);
+        state.apply(Action::Call).unwrap();
+        state.apply(Action::Check).unwrap();
+        let strengths = Strengths::new(state.board());
+        let range = Range::uniform();
+        let oop = Spot::analyse(&state, &bot, &range, &strengths, None);
+        let c = oop.check_response.expect("the bot acts after a check");
+        assert!(c.bet > 0.0 && c.bet < 1.0, "{c:?}");
+        assert!(
+            c.equity_vs_bets < c.equity_vs_checks,
+            "bets come from stronger hands: {c:?}"
+        );
+        let check = oop.ev(Action::Check).unwrap();
+        assert!(check >= (1.0 - c.bet) * c.equity_vs_checks * oop.pot as f64 - 1e-9);
+        let text = review(&oop, Action::Check).text;
+        assert!(text.contains("If you check, the bot bets"), "{text}");
+
+        // In position, checking ends the street: no reply to price.
+        state.apply(Action::Check).unwrap();
+        let ip = Spot::analyse(&state, &bot, &range, &strengths, None);
+        assert!(ip.check_response.is_none());
+    }
+
+    #[test]
+    fn analysis_reads_the_solid_bot() {
+        use crate::bot::SolidBot;
+        use crate::game::Config;
+        // Hero has one pair on the river and the solid bot bets big.
+        let c = parse_cards("9s 9d 2c 3c Ks 7d 4h Jc 2s").unwrap();
+        let mut state = HandState::new(
+            Config::default(),
+            0,
+            [[c[0], c[1]], [c[2], c[3]]],
+            [c[4], c[5], c[6], c[7], c[8]],
+        );
+        let bot = SolidBot::new(0);
+        let mut range = Range::uniform();
+        // Hero raises, the bot calls; then it checks the flop and turn, and bets the river.
+        for (action, by_bot) in [
+            (Action::RaiseTo(250), false),
+            (Action::Call, true),
+            (Action::Check, true),
+            (Action::Check, false),
+            (Action::Check, true),
+            (Action::Check, false),
+            (Action::RaiseTo(500), true),
+        ] {
+            if by_bot {
+                let strengths = Strengths::new(state.board());
+                range.update(|h| bot.tendencies(&state, h, &strengths).chance_of(action));
+            }
+            state.apply(action).unwrap();
+        }
+        let strengths = Strengths::new(state.board());
+        let spot = Spot::analyse(&state, &bot, &range, &strengths, None);
+        let random = equity_vs_random(state.hole(0), state.board());
+        assert!(spot.read.is_some());
+        assert!(
+            spot.equity < random - 0.1,
+            "a bet should make the bot's range stronger: {} vs {random}",
+            spot.equity
+        );
+        assert!(spot.responses.iter().all(|r| (0.0..=1.0).contains(&r.fold)));
     }
 
     #[test]

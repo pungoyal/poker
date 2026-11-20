@@ -21,7 +21,7 @@ You need Rust 1.88 or newer. The pinned toolchain is managed with
 
 ```sh
 mise install          # or: rustup toolchain install 1.100.0
-cargo run -- --seed 7 # play a seeded session
+cargo run -- --seed 7 # play a seeded session (add --plain for line mode)
 ```
 
 Alternatively, everything runs in Docker and needs nothing else installed:
@@ -47,7 +47,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
   the same seed and actions. Never read the clock or a global RNG inside the
   library; take a seed or an `Rng` instead.
 - **Keep the library free of I/O.** `src/lib.rs` and its modules are a pure
-  engine; terminal handling belongs in `src/main.rs`.
+  engine; terminal handling and network calls belong in `src/main.rs` and
+  `src/app/`.
+- **A bot's `tendencies` must match its `act`.** The coach reads a bot's range
+  from `tendencies`, so a bot whose actions drift from what it reports will
+  teach the wrong lessons. The solid bot samples its actions from them.
+- **The engine owns the numbers.** The LLM coach only explains facts the engine
+  computed (`coach::brief`); never ask the model to calculate. Tests must not
+  call the network: the LLM client's parsing is tested on recorded streams.
 - **Hand records are a stable format.** If you change `HandRecord`, keep old
   files readable or explain the migration in the changelog.
 - **Test the rules.** Betting and evaluation changes need tests covering the

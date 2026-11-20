@@ -143,11 +143,10 @@ impl App {
         };
         let intro = match (&app.llm, mode) {
             (_, CoachMode::Off) => "Coach is off. Press ? for keys.".to_string(),
-            (Some(llm), _) => format!(
-                "Coach ready ({}). Ask me anything with /, or press ? for keys.",
-                llm.model()
-            ),
-            (None, _) => "Coach ready. Set ANTHROPIC_API_KEY for a coach that talks with you; until then I use the engine's own words. Press ? for keys.".to_string(),
+            (Some(llm), _) => format!("Coach: {}. / to ask, ? for keys.", llm.model()),
+            (None, _) => {
+                "Coach: engine only (set ANTHROPIC_API_KEY for Claude). ? for keys.".to_string()
+            }
         };
         app.say(Speaker::System, intro, None);
         app.start_hand();
@@ -318,7 +317,7 @@ impl App {
                 text: String::new(),
             });
         } else {
-            self.say(Speaker::Coach, "Now make your decision.".into(), None);
+            self.say(Speaker::Coach, "Decide.".into(), None);
         }
     }
 
@@ -669,7 +668,7 @@ impl App {
         self.input = None;
         if !self.script.is_empty() {
             self.script.clear();
-            self.say(Speaker::System, "Skipped. Make your decision.".into(), None);
+            self.say(Speaker::System, "Skipped. Decide.".into(), None);
         }
     }
 

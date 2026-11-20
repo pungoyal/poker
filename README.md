@@ -80,17 +80,17 @@ Prebuilt binaries for Linux, macOS and Windows are attached to each
 ```
  ♠ poker   Hand 1  ·  vs solid  ·  session 0bb                                      seed 7
 ╭──────────────────────────────────────────────────────────╮╭ Coach ─────────────────────────╮
-│                 BOT   big blind  ·  83.8bb               ││Coach Think about what the solid│
-│                      ╳╳╳╳ ╳╳╳╳                           ││bot has done. Are its likely    │
-│                      ╳╳╳╳ ╳╳╳╳                           ││hands mostly [s]trong, mostly   │
-│                      ╳╳╳╳ ╳╳╳╳                           ││[w]eak, or [m]ixed?             │
+│                 BOT   big blind  ·  83.8bb               ││Coach After its actions, is the │
+│                      ╳╳╳╳ ╳╳╳╳                           ││bot's range mostly [s]trong,    │
+│                      ╳╳╳╳ ╳╳╳╳                           ││mostly [w]eak, or [m]ixed?      │
+│                      ╳╳╳╳ ╳╳╳╳                           ││                                │
 │                        ● 9.2bb                           ││                                │
 │                                                          ││You s                           │
 │               Q    4    A    ┌──┐ ┌──┐                   ││                                │
-│                ♣    ♦    ♥   │  │ │  │                   ││Coach Right. Its hands now:     │
-│                  Q    4    A └──┘ └──┘                   ││strong 80% · medium 1% · draws  │
-│                 Pot 23.2bb   ·   Flop                    ││0% · weak 18%, so mostly strong.│
-│                                                          ││                                │
+│                ♣    ♦    ♥   │  │ │  │                   ││Coach Right. strong 80% · medium│
+│                  Q    4    A └──┘ └──┘                   ││1% · draws 0% · weak 18%: mostly│
+│                 Pot 23.2bb   ·   Flop                    ││strong. Each bet strips out     │
+│                                                          ││hands that would fold or check. │
 │                      2    3                              ││                                │
 │                       ♠    ♣                             ││                                │
 │                         2    3                           ││                                │
@@ -126,23 +126,24 @@ Options:
 
 ### The coach
 
-The poker engine works out every number; the coach's job is to teach with them.
-After each decision you get a grade and the reasons that decided the spot:
+The poker engine works out every number; the coach's job is to teach with them,
+in as few words as the point needs. After each decision you get a grade, what
+your choice was worth against the best option, and the facts that decided it:
 
 ```
   Coach · Mistake:
-    With three-two offsuit before the flop you win 28% against the hands the bot
-    is likely to hold. Calling 5bb is worth about -1.08bb on average, but
-    folding was worth 0bb: about 1.08bb given up. Its actions so far point to
-    these hands: strong 80% · medium 1% · draws 0% · weak 18%. Calling 5bb into
-    9bb needs 36% equity and you had 28%: just short.
+    Three-two offsuit preflop: 28% against its likely hands. Calling 5bb
+    -1.08bb; folding 0bb: 1.08bb given up. Its range: strong 80% · medium 1% ·
+    draws 0% · weak 18%. Calling 5bb into 9bb needs 36%; you have 28%: just
+    short.
 ```
 
 With `ANTHROPIC_API_KEY` set (or `ANTHROPIC_AUTH_TOKEN`), the coach is Claude
 (`claude-opus-5-5` by default; change it with `POKER_COACH_MODEL`). It receives
 the engine's facts for each decision (the hand so far, equity, pot odds, the
 bot's likely hands, the value of every option and your recurring leaks) and is
-told to use only those numbers. Replies stream into the coach panel. Each
+told to use only those numbers, lead with the verdict, and cut anything that
+does not help the decision. Replies stream into the coach panel. Each
 request sends the current hand's conversation to the Anthropic API and is
 billed to your key; nothing else leaves your machine.
 

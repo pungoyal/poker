@@ -23,6 +23,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   answers yours (`/` at the table, `? question` in plain mode) and explains
   each review, using only the numbers the engine computed. `--no-llm` turns it
   off.
+- Coaching text is terse: the verdict first, then only the numbers and
+  principle that decided the spot, with no filler. The LLM coach is held to
+  the same standard.
 - A full-screen table: cards on a felt, stacks and chips, an action log, a
   streaming coach panel, one-key actions and a bet slider with pot presets.
   `--plain` keeps the line mode, which is also used when input is piped.

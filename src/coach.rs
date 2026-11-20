@@ -565,21 +565,21 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
         let runner_up = ranked.iter().find(|&&(a, _)| a != action);
         text.push(match runner_up {
             Some(&(alt, alt_ev)) => format!(
-                "{} was the best option, worth about {} on average; next best was {} at {}.",
+                "{} was best ({}); next, {} ({}).",
                 capitalise(&spot.phrase(action)),
                 spot.signed(chosen),
                 spot.phrase(alt),
                 spot.signed(alt_ev),
             ),
             None => format!(
-                "{} was the only sensible option ({}).",
+                "{} was the only option ({}).",
                 capitalise(&spot.phrase(action)),
                 spot.signed(chosen)
             ),
         });
     } else {
         text.push(format!(
-            "{} is worth about {} on average, but {} was worth {}: about {} given up.",
+            "{} {}; {} {}: {} given up.",
             capitalise(&spot.phrase(action)),
             spot.signed(chosen),
             spot.phrase(best),
@@ -595,38 +595,27 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
     }
 }
 
-/// "With a pair of fives and a flush draw on the turn you win 41% against ..."
+/// "A pair of fives and a flush draw on the turn: 41% against its likely hands."
 fn situation(spot: &Spot) -> String {
-    let mut hand = spot.made.clone();
+    let mut hand = capitalise(&spot.made);
     if !spot.draws.is_empty() {
-        let draws: Vec<String> = spot
+        let draws: Vec<&str> = spot
             .draws
             .iter()
-            .map(|d| {
-                let name = d.split(" (").next().unwrap_or(d);
-                let article = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
-                    "an"
-                } else {
-                    "a"
-                };
-                format!("{article} {name}")
-            })
+            .map(|d| d.split(" (").next().unwrap_or(d))
             .collect();
-        hand = format!("{hand} and {}", draws.join(" and "));
+        hand = format!("{hand} with a {}", draws.join(" and a "));
     }
     let when = match spot.street {
-        Street::Preflop => "before the flop".to_string(),
+        Street::Preflop => "preflop".to_string(),
         street => format!("on the {}", street.name().to_lowercase()),
     };
     let against = if spot.read.is_some() {
-        "against the hands the bot is likely to hold"
+        "against its likely hands"
     } else {
         "against a random hand"
     };
-    format!(
-        "With {hand} {when} you win {} {against}.",
-        percent(spot.equity)
-    )
+    format!("{hand} {when}: {} {against}.", percent(spot.equity))
 }
 
 /// The facts that decided this spot, chosen by what was done and what was best.
@@ -639,38 +628,33 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
     // Fold or call: pot odds decide it.
     if spot.to_call > 0 && involves(|a| matches!(a, Action::Fold | Action::Call)) {
         if let Some(read) = spot.read {
-            why.push(format!("Its actions so far point to these hands: {read}."));
+            why.push(format!("Its range: {read}."));
         }
         let need = spot.pot_odds();
         let margin = equity - need;
         let verdict = if margin.abs() < 0.03 {
-            ": a near coin-flip, so neither choice costs much"
+            "near coin-flip"
         } else if margin > 0.15 {
-            ": an easy call on price alone"
+            "easy call"
         } else if margin > 0.0 {
-            ": enough to continue"
+            "enough"
         } else if margin > -0.15 {
-            ": just short"
+            "just short"
         } else {
-            ": well short"
+            "well short"
+        };
+        let draw = if !spot.draws.is_empty() && matches!(spot.street, Street::Flop | Street::Turn) {
+            ", draw included"
+        } else {
+            ""
         };
         why.push(format!(
-            "Calling {} into {} needs {} equity and you had {}{verdict}.",
+            "Calling {} into {} needs {}; you have {}{draw}: {verdict}.",
             spot.bb(spot.to_call as f64),
             spot.bb(pot),
             percent(need),
             percent(equity),
         ));
-        if !spot.draws.is_empty() && matches!(spot.street, Street::Flop | Street::Turn) {
-            let cards = if spot.street == Street::Flop {
-                "both the turn and the river"
-            } else {
-                "the river"
-            };
-            why.push(format!(
-                "Your draw is part of that number: it counts {cards}, but assumes no more betting."
-            ));
-        }
     }
 
     // Betting: how the opponent answers decides it.
@@ -684,37 +668,21 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
             let called = percent(r.equity_called);
             if r.fold < 0.005 {
                 why.push(if r.equity_called >= 0.5 {
-                    format!(
-                        "The {} bot does not fold here, and you beat the hands that call {called} of the time, so every extra chip in the pot is profit.",
-                        spot.opponent
-                    )
+                    format!("It does not fold here and you win {called} when called: every extra chip is profit.")
                 } else {
-                    format!(
-                        "The {} bot does not fold here, so a bet cannot win the pot by itself; called, you win only {called}.",
-                        spot.opponent
-                    )
+                    format!("It does not fold here, so the bet cannot win the pot by itself; called, you win {called}.")
                 });
             } else {
                 let support = match (r.fold >= needed, r.equity_called >= 0.5) {
-                    (true, true) => {
-                        "it profits from the folds alone, and you are ahead when called too."
-                    }
-                    (true, false) => {
-                        "it profits from the folds alone, even though you are usually behind when called."
-                    }
-                    (false, true) => {
-                        "folds alone won't pay for it, but you are ahead of the hands that call, so the calls are where the money is."
-                    }
-                    (false, false) => {
-                        "folds alone won't pay for it, and you are usually behind the hands that call."
-                    }
+                    (true, true) => "folds alone pay, and you are ahead when called.",
+                    (true, false) => "folds alone pay.",
+                    (false, true) => "folds fall short; the value is in the calls.",
+                    (false, false) => "folds fall short and the callers beat you.",
                 };
                 why.push(format!(
-                    "{} makes the bot fold about {} of the time; against the hands it continues with you win {called}. Risking {} to win {} needs folds {} of the time on its own: {support}",
+                    "{} gets folds {}; called, you win {called}. Folds alone need {}: {support}",
                     capitalise(&spot.phrase(bet)),
                     percent(r.fold),
-                    spot.bb(risk),
-                    spot.bb(pot),
                     percent(needed),
                 ));
             }
@@ -728,23 +696,23 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
     {
         why.push(if better > chosen {
             if b.equity_called >= 0.5 {
-                "Size up: you are ahead of the hands that continue, so a bigger pot pays more.".to_string()
+                "Size up: you are ahead of the callers.".to_string()
             } else {
                 format!(
-                    "Size up: the bigger bet folds out more ({} against {}).",
+                    "Size up: more folds ({} vs {}).",
                     percent(b.fold),
                     percent(c.fold)
                 )
             }
         } else if c.equity_called < 0.5 {
             format!(
-                "Size down: the smaller bet gets folds {} of the time against {}, and risks less when a better hand calls.",
+                "Size down: similar folds ({} vs {}) for less risk.",
                 percent(b.fold),
                 percent(c.fold)
             )
         } else {
             format!(
-                "Size down: a smaller bet keeps more worse hands in ({} continue rather than {}).",
+                "Size down: more worse hands call ({} vs {}).",
                 percent(1.0 - b.fold),
                 percent(1.0 - c.fold)
             )
@@ -756,12 +724,12 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
         && let Some(c) = spot.check_response
     {
         let reply = if spot.call_after_check(&c) > 0.0 {
-            "so you could call it profitably"
+            "call"
         } else {
-            "so you would have to fold to it"
+            "fold"
         };
         why.push(format!(
-            "If you check, the bot bets about {} of the time; against those bets you win {}, {reply}. When it checks behind you win {}.",
+            "If you check, the bot bets {}: you win {} against those bets ({reply}), {} when it checks back.",
             percent(c.bet),
             percent(c.equity_vs_bets),
             percent(c.equity_vs_checks),
@@ -774,13 +742,11 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
         && let Some(r) = spot.response(amount)
     {
         why.push(if r.equity_called >= 0.5 {
-            "Checking lets worse hands see the showdown for free when they would have paid a bet."
-                .to_string()
+            "Checking lets worse hands reach showdown free.".to_string()
         } else {
             format!(
-                "Checking gives up a pot the bot would often surrender: it folds {} to {}.",
-                percent(r.fold),
-                spot.phrase(best)
+                "Checking forgoes folds: it folds {} to that bet.",
+                percent(r.fold)
             )
         });
     }
@@ -792,20 +758,13 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
         && let Some(r) = spot.response(amount)
     {
         why.push(if r.equity_called < 0.5 {
-            "This bet folds out the hands you beat and gets called by the ones that beat you.".to_string()
+            "The bet folds out worse hands and gets called by better.".to_string()
         } else {
             format!(
-                "The hands that fold ({}) are mostly ones you already beat, so the bet wins less than letting them reach showdown.",
+                "Its folds ({}) are mostly hands you already beat.",
                 percent(r.fold)
             )
         });
-    }
-
-    if spot.street == Street::River && spot.to_call > 0 {
-        why.push(
-            "On the river nothing is left to come: the equity is simply how often your hand is best now."
-                .to_string(),
-        );
     }
     why
 }
@@ -817,15 +776,14 @@ fn unpriced_bet(spot: &Spot, action: Action) -> String {
     };
     let risk = (amount - spot.street_commit) as f64;
     let pot = spot.pot as f64;
-    let have = percent(spot.equity);
     if spot.equity >= 0.5 {
         format!(
-            "{} A value bet: you are ahead {have} of the time, so you want calls from worse hands.",
+            "{} A value bet: you want calls from worse hands.",
             situation(spot)
         )
     } else {
         format!(
-            "{} A bluff: risking {} to win {}, it needs a fold more than {} of the time to profit on its own.",
+            "{} A bluff: risking {} to win {} needs folds {}.",
             situation(spot),
             spot.bb(risk),
             spot.bb(pot),
@@ -944,20 +902,20 @@ impl Question {
     /// The question as shown to the player, with how to answer.
     pub fn prompt(&self, spot: &Spot) -> String {
         match self {
-            Question::Read(_) => format!(
-                "Think about what the {} bot has done. Are its likely hands mostly [s]trong, mostly [w]eak, or [m]ixed?",
-                spot.opponent
-            ),
+            Question::Read(_) => {
+                "After its actions, is the bot's range mostly [s]trong, mostly [w]eak, or [m]ixed?"
+                    .to_string()
+            }
             Question::Equity => {
                 let against = if spot.read.is_some() {
                     "those hands"
                 } else {
                     "a random hand"
                 };
-                format!("How often does your hand win at showdown against {against}? Answer in %.")
+                format!("Your equity against {against}, in %?")
             }
             Question::PotOdds => format!(
-                "You must call {} into a pot of {}. What share of the final pot must you win to break even? Answer in %.",
+                "Calling {} into {}: what equity do you need, in %?",
                 spot.bb(spot.to_call as f64),
                 spot.bb(spot.pot as f64)
             ),
@@ -978,9 +936,9 @@ impl Question {
                 let actual = read_label(read);
                 let right = guess == actual;
                 let why = if spot.to_call > 0 {
-                    "A bet or raise removes most of the hands that would have folded or checked, so ranges get stronger with each bet."
+                    "Each bet strips out hands that would fold or check."
                 } else {
-                    "Checking and calling keep weaker hands in a range: strong hands usually bet or raise."
+                    "Checks and calls keep weak hands; strong hands mostly bet."
                 };
                 Ok(Feedback {
                     grade: if right {
@@ -990,8 +948,8 @@ impl Question {
                     },
                     loss: 0.0,
                     text: format!(
-                        "{} Its hands now: {read}, so mostly {actual}. {why}",
-                        if right { "Right." } else { "Not quite." }
+                        "{} {read}: mostly {actual}. {why}",
+                        if right { "Right." } else { "No." }
                     ),
                 })
             }
@@ -1000,10 +958,10 @@ impl Question {
                 let actual = spot.equity;
                 let off = guess - actual;
                 let mut text = if off.abs() <= 0.07 {
-                    format!("Good estimate: it is {}.", percent(actual))
+                    format!("Close: {}.", percent(actual))
                 } else {
                     format!(
-                        "It is {}: you {} by {} points.",
+                        "{}: you {} by {} points.",
                         percent(actual),
                         if off > 0.0 {
                             "overestimated"
@@ -1014,9 +972,7 @@ impl Question {
                     )
                 };
                 if spot.read.is_some() && off > 0.07 {
-                    text.push_str(
-                        " Measure against the hands it plays this way, not against any two cards.",
-                    );
+                    text.push_str(" Measure against its range, not any two cards.");
                 }
                 if spot.outs > 0 && spot.street != Street::River {
                     let (rule, cards) = if spot.street == Street::Flop {
@@ -1025,7 +981,7 @@ impl Question {
                         (2, "one card")
                     };
                     text.push_str(&format!(
-                        " With {} outs and {cards} to come, the rule of {rule} says your draw alone hits about {}% of the time.",
+                        " Rule of {rule}: {} outs, {cards} to come, about {}% to hit.",
                         spot.outs,
                         spot.outs * rule
                     ));
@@ -1062,9 +1018,7 @@ impl Question {
                     text: if right {
                         format!("Right: {working}.")
                     } else {
-                        format!(
-                            "It is {working}. Your call becomes part of the pot you are trying to win."
-                        )
+                        format!("No: {working}. Your call is part of the final pot.")
                     },
                 })
             }
@@ -1250,7 +1204,7 @@ mod tests {
         assert_eq!(bad_fold.grade, Grade::Inaccuracy);
         close(bad_fold.loss, 60.0, 1e-9);
         assert!(
-            bad_fold.text.contains("calling 1bb was worth +0.6bb"),
+            bad_fold.text.contains("calling 1bb +0.6bb"),
             "{}",
             bad_fold.text
         );

@@ -261,7 +261,7 @@ pub fn play(options: PlayOptions) -> io::Result<()> {
                 if let Some(spot) = &spot {
                     if legal.to_call > 0 && mode != CoachMode::Teach {
                         println!(
-                            "  Pot odds: call {} to win {} → you need to win more than {:.0}% of the time.",
+                            "  Pot odds: call {} to win {} → need {:.0}% equity.",
                             printer.bb(legal.to_call),
                             printer.bb(before.pot()),
                             spot.pot_odds() * 100.0

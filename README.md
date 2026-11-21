@@ -37,22 +37,31 @@ sessions, and `poker drill` replays the costliest ones as practice.
   prices every option (fold, check, call and the standard bet sizes) by how
   often the bot folds, how strong the hands that continue are, and what the
   streets still to come add.
-- **One question, one key.** In the default `teach` mode the coach asks one
-  thing before each decision (read the bot's range, estimate your equity, or
-  work out the price), you answer with a number key, and it keeps score by
-  skill. It asks about what you have practised least.
-- **Reviews you can scan.** After each decision: the verdict, what it cost,
-  the top options side by side with yours marked, and the two or three facts
-  that decided it.
+- **Questions that follow what you need.** In the default `teach` mode the
+  coach asks before a decision: read the bot's range, estimate your equity,
+  work out the price, count your outs, or judge how often a bet gets a fold.
+  You answer with a number key. Skills you get wrong come up more; a skill you
+  keep getting right comes up less and less, and never twice running. Against
+  a mystery opponent it also asks, now and then, who you think you are facing.
+- **Reviews you can scan.** A mistake gets the full card: the verdict, what it
+  cost, the top options side by side with yours marked, and the facts that
+  decided it. A sound play gets one line; `d` opens it in full.
+- **The opponent's range, drawn.** A grid of the 169 starting hands, lit by
+  how likely each is after everything the bot has done, with your own hand
+  marked. In `teach` mode it lags one decision behind so it never answers a
+  question for you; `n` shows it live.
 - **An LLM coach.** With an Anthropic API key, Claude explains every review in
   its own words and answers your questions (press `/` at any time), working
   only from the engine's exact numbers.
 - **Leaks and drills.** `poker leaks` finds your costliest recurring mistakes
   across sessions; `poker drill` replays them as practice spots.
-- **A full-screen table.** Cards on a felt, the decision in numbers under your
-  seat, the opponent panel, an action log, one-key actions and a bet slider
-  with pot-sized presets. A plain line mode is kept for pipes and transcripts
-  (`--plain`).
+- **A full-screen table that uses the screen.** Cards on a felt, the decision
+  in numbers under your seat, one-key actions and a bet slider with pot-sized
+  presets. A wide terminal adds the range grid, the opponent's tendencies as
+  gauges, a session panel (the result hand by hand, what mistakes cost and on
+  which street, what to work on, question scores), the hand's action log and
+  a list of earlier hands. Narrower terminals drop panels, not the table. A
+  plain line mode is kept for pipes and transcripts (`--plain`).
 - **Correct, reproducible and verifiable.** A deterministic rules engine, a fast
   evaluator, seeded deals (`--seed`), and hand histories that `poker replay`
   re-runs and checks against their seed.
@@ -87,36 +96,41 @@ Prebuilt binaries for Linux, macOS and Windows are attached to each
 ## Playing
 
 ```
- ♠ poker   Hand 1  ·  vs station  ·  result 0bb  ·  questions Equity 0/1                                seed 5
+ ♠ poker   Hand 2  ·  vs station  ·  result -4bb  ·  mistakes cost 3.83bb (383bb per 100 hands)         seed 5
 ╭──────────────────────────────────────────────────────────────────╮╭ Opponent · station ──────────────────────╮
-│                     STATION   big blind  ·  98bb                 ││A calling station: plays most hands,      │
+│                      STATION   button  ·  99bb                   ││A calling station: plays most hands,      │
 │                            ╳╳╳╳ ╳╳╳╳                             ││limps, calls far too much, rarely raises. │
 │                            ╳╳╳╳ ╳╳╳╳                             ││Beat it: Never bluff. Bet your good hands │
 │                            ╳╳╳╳ ╳╳╳╳                             ││big and often; its raises mean strength.  │
-│                               ● 1bb                              ││Seen: after the flop bets 100% / calls 0% │
-│                                                                  ││Holding: shown once you act (n to peek).  │
+│                                                                  ││Plays hands     ░░░░░░░░░░░░░░░░░░░░░ 0%  │
+│                                                                  ││Raises preflop  ░░░░░░░░░░░░░░░░░░░░░ 0%  │
+│                     9    7    4    ┌──┐ ┌──┐                     ││Bets, not calls █████████████████████ 100%│
+│                      ♣    ♣    ♣   │  │ │  │                     ││over 1 hand                               │
+│                        9    7    4 └──┘ └──┘                     ││Holding ██████████████████████████████████│
+│                        Pot 2bb   ·   Flop                        ││strong 1%  medium 33%  draws 0%  weak 65% │
 │                                                                  │╰──────────────────────────────────────────╯
-│                                                                  │╭ Coach ───────────────────────────────────╮
-│                     3    4    9    3    ┌──┐                     ││✗ Mistake · 1.66bb given up               │
-│                      ♠    ♥    ♣    ♥   │  │                     ││A pair of nines on the flop · 82% vs its  │
-│                        3    4    9    3 └──┘                     ││likely hands                              │
-│                        Pot 3bb   ·   Turn                        ││  Betting 2bb (100% pot)   +4.21bb  ★ best│
-│                           Bot bets 1bb.                          ││  Betting 1.5bb (75% pot)  +4.05bb        │
-│                                                                  ││  Betting 1bb (50% pot)    +3.81bb        │
-│                            K    9                                ││▶ Checking                 +2.55bb  you   │
-│                             ♥    ♦                               ││· Betting 2bb (100% pot) gets folds 35%;  │
-│                               K    9                             ││called, you win 80%. Folds alone need 50%:│
-│                     ▶  YOU   button  ·  99bb                     ││folds fall short; the value is in the     │
-│                    two pair, nines and threes                    ││calls.                                    │
-│     To call 1bb into 3bb   ·   Price ?   ·   Stacks 32.7× pot    ││· Checking lets worse hands reach showdown│
-│             n  peek at your equity and the best play             ││free.                                     │
-╰──────────────────────────────────────────────────────────────────╯│                                          │
-╭ Hand ────────────────────────────────────────────────────────────╮│Coach Calling 1bb into 3bb: how often must│
-│── Turn 3♠ 4♥ 9♣ 3♥                                               ││you win?                                  │
-│Bot bets 1bb.                                                     ││ 1  20%   2  25%   3  33%   4  50%        │
+│                            K    8                                │╭ Coach ───────────────────────────────────╮
+│                             ♣    ♦                               ││  Raising to 2.5bb (75% …  +2.44bb        │
+│                               K    8                             ││  Raising to 2bb (50% po…  +2.16bb        │
+│                    ▶  YOU   big blind  ·  99bb                   ││▶ Checking                 +1.61bb  you   │
+│                  king high · flush draw (9 outs)                 ││· Raising to 3bb (100% pot) gets folds    │
+│                         Stacks 49.5× pot                         ││21%; called, you win 59%. Folds alone need│
+│             n  peek at your equity and the best play             ││50%: folds fall short; the value is in the│
+╰──────────────────────────────────────────────────────────────────╯│calls.                                    │
+╭ Hand ────────────────────────────────────────────────────────────╮│· Checking lets worse hands reach showdown│
+│Hand 2 · you are on the big blind                                 ││free.                                     │
+│Bot calls 0.5bb.                                                  ││                                          │
+│You check.                                                        ││Coach How many cards complete your draw?  │
+│── Flop 9♣ 7♣ 4♣                                                  ││ 1  4   2  6   3  9   4  12               │
+│                                                                  ││                                          │
 ╰──────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
- 1-4  answer the coach   esc  skip   or act:   f  fold   c  call 1bb   b  raise   a  all-in 99bb
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1-4  answer the coach   esc  skip   or act:   x  check   b  bet   a  all-in 99bb
 ```
+
+That is a 112-column terminal. From 170 columns the table gains a middle
+column: the opponent's likely hands as a grid, its tendencies, and a session
+panel; a tall window adds a list of earlier hands.
 
 Both players start every hand with 100 big blinds and the button alternates.
 
@@ -126,7 +140,8 @@ Both players start every hand with 100 big blinds and the button alternates.
 | `c` / `x` | call / check | `1`–`5` | a third, half, three quarters, the pot, all-in |
 | `a` | all-in | `←` `→` | adjust the size, or type an amount in bb |
 | `/` | ask the coach anything | `1`–`6` | answer the coach's question (`esc` skips it, or just act) |
-| `n` | peek at your equity, the price and the best play | `space` | next hand |
+| `n` | peek at your equity, the price, the best play and the live range | `space` | next hand |
+| `d` | open or close the last review in full | `PgUp` `PgDn` | scroll the coach |
 | `?` | help | `q` | leave the table |
 
 Options:

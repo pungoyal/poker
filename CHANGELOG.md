@@ -8,6 +8,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A layout for wide terminals (170 columns or more): the table, a middle
+  column of what is known, and the coach. The felt is no taller or wider than
+  its cards need, and draws them large when there is room.
+- A range grid: the 169 starting hands lit by how likely the opponent is to
+  hold each, with your hand marked. It is one decision behind in `teach` mode
+  (`n` shows it live) and shows the final range when a hand ends.
+- A session panel: the result hand by hand as a chart, what mistakes cost,
+  decisions by grade, chips given up by street, the two costliest leaks, the
+  current run of sound decisions and question scores by skill.
+- The opponent's tendencies as gauges, a list of earlier hands (cards, seat,
+  result, a dot per decision, the cards shown down) and, against a mystery
+  opponent, the four kinds it could be.
+- Two more questions: how many cards complete your draw, and how often the
+  opponent folds to a bet of a given size.
+- A guess at the mystery opponent: after 12 hands, and again every 15, the
+  coach asks which kind of player you are facing. It is marked when you leave.
+- `d` opens or closes the last review in full.
+
+### Changed
+
+- Questions adapt. A skill answered wrong or not yet tried comes up most; one
+  answered right several times running is asked about less and less (down to
+  one decision in five), never twice in succession, and at most two questions
+  are asked per hand once the routine is familiar.
+- A sound decision is reviewed in one line (the play, what it was worth and
+  the next best option) instead of a full card; the language-model coach is
+  asked to explain only the decisions shown in full.
+- An answered question takes one line, and a right answer skips the
+  explanation. A skipped question is removed.
+
 - Opponent styles: `station` (limps, calls far too much), `nit` (folds to
   pressure) and `maniac` (raises and bluffs too often) alongside `solid`. Each
   comes with a one-line description and how to beat it, shown at the table.

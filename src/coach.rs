@@ -1007,6 +1007,10 @@ pub enum Question {
     Equity,
     /// What share of the pot does a call need to win?
     PotOdds,
+    /// How many cards complete the player's draw?
+    Outs,
+    /// How often does the opponent fold to a bet of this size?
+    Folds(Response),
 }
 
 /// The questions worth asking in `spot`, in the order to ask them.
@@ -1021,6 +1025,59 @@ pub fn questions(spot: &Spot) -> Vec<Question> {
     }
     asked
 }
+
+/// Every question that fits `spot`: the three steps of [`questions`], plus
+/// counting outs with a draw and judging how often a bet gets a fold.
+pub fn drills(spot: &Spot) -> Vec<Question> {
+    let mut asked = questions(spot);
+    if spot.outs >= 4 && matches!(spot.street, Street::Flop | Street::Turn) {
+        asked.push(Question::Outs);
+    }
+    // A middling size: the all-in is the last response when it is priced.
+    let sizes = spot.responses.len();
+    if sizes > 0 {
+        asked.push(Question::Folds(spot.responses[(sizes - 1) / 2]));
+    }
+    asked
+}
+
+/// "about 36% to hit" by the rule of four and two.
+fn rule_of_outs(spot: &Spot) -> String {
+    let (rule, cards) = if spot.street == Street::Flop {
+        (4, "two cards")
+    } else {
+        (2, "one card")
+    };
+    format!(
+        "Rule of {rule}: {} outs, {cards} to come, about {}% to hit.",
+        spot.outs,
+        spot.outs * rule
+    )
+}
+
+/// What a bet to `response.amount` needs and gets in folds.
+fn folds_text(spot: &Spot, response: &Response) -> String {
+    let risk = response.amount.saturating_sub(spot.street_commit) as f64;
+    let need = risk / (risk + spot.pot as f64);
+    format!(
+        "It folds {}. As a pure bluff that size needs {} folds to pay; your equity when called makes up the rest.",
+        percent(response.fold),
+        percent(need)
+    )
+}
+
+/// "bet 6bb" or "raise to 12bb".
+fn bet_words(spot: &Spot, amount: u32) -> String {
+    let verb = if spot.opp_commit == 0 {
+        "bet"
+    } else {
+        "raise to"
+    };
+    format!("{verb} {}", spot.bb(amount as f64))
+}
+
+/// Upper edges of the fold rates offered as answers.
+const FOLD_EDGES: [f64; 4] = [0.2, 0.4, 0.6, 1.01];
 
 /// How a strong range reads: mostly strong, mostly weak, or a mix.
 fn read_label(read: &Profile) -> &'static str {
@@ -1053,6 +1110,11 @@ impl Question {
                 "Calling {} into {}: what equity do you need, in %?",
                 spot.bb(spot.to_call as f64),
                 spot.bb(spot.pot as f64)
+            ),
+            Question::Outs => "How many cards complete your draw?".to_string(),
+            Question::Folds(response) => format!(
+                "If you {}, how often does the bot fold, in %?",
+                bet_words(spot, response.amount)
             ),
         }
     }
@@ -1157,6 +1219,34 @@ impl Question {
                     },
                 })
             }
+            Question::Outs => {
+                let guess: u32 = answer
+                    .parse()
+                    .map_err(|_| "Answer with a number, e.g. 9.".to_string())?;
+                let grade = match guess.abs_diff(spot.outs) {
+                    0 => Grade::Good,
+                    1 => Grade::Close,
+                    _ => Grade::Inaccuracy,
+                };
+                Ok(Feedback {
+                    grade,
+                    loss: 0.0,
+                    text: rule_of_outs(spot),
+                })
+            }
+            Question::Folds(response) => {
+                let guess = parse_percent(&answer)?;
+                let grade = match (guess - response.fold).abs() {
+                    x if x <= 0.1 => Grade::Good,
+                    x if x <= 0.2 => Grade::Close,
+                    _ => Grade::Inaccuracy,
+                };
+                Ok(Feedback {
+                    grade,
+                    loss: 0.0,
+                    text: folds_text(spot, response),
+                })
+            }
         }
     }
 }
@@ -1170,16 +1260,28 @@ pub enum Skill {
     Equity,
     /// Working out the price of a call.
     Price,
+    /// Counting the cards that complete a draw.
+    Outs,
+    /// Judging how often a bet gets a fold.
+    Folds,
 }
 
 impl Skill {
-    pub const ALL: [Skill; 3] = [Skill::Read, Skill::Equity, Skill::Price];
+    pub const ALL: [Skill; 5] = [
+        Skill::Read,
+        Skill::Equity,
+        Skill::Price,
+        Skill::Outs,
+        Skill::Folds,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Skill::Read => "Reads",
             Skill::Equity => "Equity",
             Skill::Price => "Price",
+            Skill::Outs => "Outs",
+            Skill::Folds => "Folds",
         }
     }
 }
@@ -1193,6 +1295,8 @@ impl Question {
             Question::Read(_) => Skill::Read,
             Question::Equity => Skill::Equity,
             Question::PotOdds => Skill::Price,
+            Question::Outs => Skill::Outs,
+            Question::Folds(_) => Skill::Folds,
         }
     }
 
@@ -1211,6 +1315,11 @@ impl Question {
                 "Calling {} into {}: how often must you win?",
                 spot.bb(spot.to_call as f64),
                 spot.bb(spot.pot as f64)
+            ),
+            Question::Outs => "How many cards complete your draw?".to_string(),
+            Question::Folds(response) => format!(
+                "If you {}, how often does it fold?",
+                bet_words(spot, response.amount)
             ),
         }
     }
@@ -1276,6 +1385,27 @@ impl Question {
                 let right = options.iter().position(|&o| o == need).unwrap();
                 (options.iter().map(|o| format!("{o}%")).collect(), right)
             }
+            Question::Outs => {
+                let outs = spot.outs as i64;
+                let mut wrong: Vec<i64> = [2, 4, 6, 8, 10, 12, 15, 18, 21]
+                    .into_iter()
+                    .filter(|x| (x - outs).abs() >= 2)
+                    .collect();
+                wrong.sort_by_key(|x| (x - outs).abs());
+                let mut options: Vec<i64> = wrong.into_iter().take(3).collect();
+                options.push(outs);
+                options.sort_unstable();
+                let right = options.iter().position(|&o| o == outs).unwrap();
+                (options.iter().map(|o| o.to_string()).collect(), right)
+            }
+            Question::Folds(response) => {
+                let names = ["under 20%", "20–40%", "40–60%", "over 60%"];
+                let right = FOLD_EDGES
+                    .iter()
+                    .position(|&edge| response.fold < edge)
+                    .unwrap_or(3);
+                (names.iter().map(|n| n.to_string()).collect(), right)
+            }
         }
     }
 
@@ -1296,7 +1426,12 @@ impl Question {
                     } else {
                         Grade::Inaccuracy
                     },
-                    format!("{read}. {why}"),
+                    // The reason is for those who got it wrong.
+                    if correct {
+                        format!("{read}.")
+                    } else {
+                        format!("{read}. {why}")
+                    },
                 )
             }
             Question::Equity => {
@@ -1356,6 +1491,30 @@ impl Question {
                         format!("{working}. Your call is part of the final pot."),
                     )
                 }
+            }
+            Question::Outs => (
+                if correct {
+                    Grade::Good
+                } else {
+                    Grade::Inaccuracy
+                },
+                format!(
+                    "{}. {}",
+                    capitalise(&spot.draws.join(" and ")),
+                    rule_of_outs(spot)
+                ),
+            ),
+            Question::Folds(response) => {
+                let near = choice.abs_diff(right) == 1
+                    && (response.fold - FOLD_EDGES[choice.min(right)]).abs() <= 0.04;
+                let grade = if correct {
+                    Grade::Good
+                } else if near {
+                    Grade::Close
+                } else {
+                    Grade::Inaccuracy
+                };
+                (grade, folds_text(spot, response))
             }
         };
         Feedback {
@@ -1602,6 +1761,50 @@ mod tests {
         let half = review(&folder, Action::RaiseTo(200));
         assert!(half.text.contains("33%"), "{}", half.text);
         assert!(half.text.contains("Size down"), "{}", half.text);
+    }
+
+    #[test]
+    fn every_drill_has_one_right_answer() {
+        use crate::bot::SolidBot;
+        use crate::cards::shuffled_deck;
+        use crate::game::Config;
+        let mut bot = SolidBot::new(3);
+        let mut kinds = std::collections::HashSet::new();
+        for seed in 0..9 {
+            let mut state =
+                HandState::deal(Config::default(), (seed % 2) as usize, &shuffled_deck(seed));
+            let mut range = Range::uniform();
+            let mut strengths = Strengths::new(state.board());
+            while let Some(seat) = state.to_act() {
+                let action = if seat == 0 {
+                    let spot = Spot::analyse(&state, &bot, &range, &strengths, None);
+                    for question in drills(&spot) {
+                        let (choices, right) = question.choices(&spot);
+                        assert!(right < choices.len(), "{question:?}");
+                        let mut unique = choices.clone();
+                        unique.dedup();
+                        assert_eq!(unique.len(), choices.len(), "{choices:?}");
+                        assert_eq!(question.answer(&spot, right).grade, Grade::Good);
+                        assert!(!question.ask(&spot).is_empty());
+                        kinds.insert(question.skill() as usize);
+                    }
+                    if state.legal().unwrap().to_call > 0 {
+                        Action::Call
+                    } else {
+                        Action::Check
+                    }
+                } else {
+                    let action = bot.act(&state, seat);
+                    range.update(|hole| bot.tendencies(&state, hole, &strengths).chance_of(action));
+                    action
+                };
+                state.apply(action).unwrap();
+                if strengths.board() != state.board() {
+                    strengths = Strengths::new(state.board());
+                }
+            }
+        }
+        assert_eq!(kinds.len(), Skill::ALL.len(), "{kinds:?}");
     }
 
     #[test]

@@ -6,14 +6,14 @@ use super::llm::{Llm, Message};
 use super::text::{bb, bb_signed, describe, narrate, position};
 use super::{CoachMode, facts, session_facts};
 use poker::analysis::{Decision, analyse_with};
-use poker::bot::by_name;
-use poker::cards::Card;
+use poker::bot::{STYLES, by_name};
+use poker::cards::{Card, Rng};
 use poker::coach::{
-    Grade, Question, Skill, Spot, fmt_bb, fmt_bb_signed, headline, questions, review, why,
+    Grade, Question, Skill, Spot, drills, fmt_bb, fmt_bb_signed, headline, review, why,
 };
-use poker::game::{Action, HandState, Legal};
+use poker::game::{Action, HandState, Legal, Street};
 use poker::history;
-use poker::range::{Profile, Strengths};
+use poker::range::{Profile, Range, Strengths, combo};
 use poker::session::{HERO, Observed, Review, Session};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -68,10 +68,37 @@ enum Extra {
     None,
     /// The answers to a question still open, chosen with one key each.
     Choices(Vec<String>),
-    /// A reviewed decision: the verdict and the options compared.
-    Review(Box<Review>),
+    /// A reviewed decision: the verdict and, in full, the options compared.
+    Review(Box<Review>, Detail),
     /// The grades of the decisions in a finished hand, and the chips given up.
     Hand(Vec<Grade>, f64),
+}
+
+/// How much of a reviewed decision is shown.
+#[derive(Clone, Copy, PartialEq)]
+enum Detail {
+    /// One line: the verdict and what the play was worth. Carries the run
+    /// of sound decisions it extends.
+    Brief(u32),
+    /// The options compared; the language model, if any, explains.
+    Full,
+    /// Opened by the player: the options and the facts that decided it.
+    Opened,
+}
+
+/// How likely each of the 169 starting hands is in a range, against the
+/// likeliest: pairs on the diagonal, suited hands above it, offsuit below.
+type Grid = [[f32; 13]; 13];
+
+/// A finished hand, for the list of recent hands.
+struct PastHand {
+    number: u64,
+    hole: [Card; 2],
+    position: &'static str,
+    /// The opponent's cards, if they were shown.
+    shown: Option<[Card; 2]>,
+    net: i64,
+    grades: Vec<Grade>,
 }
 
 /// A question to the coach being typed.
@@ -81,7 +108,8 @@ struct Input {
 
 /// The question in front of the player, answered with one key.
 struct Quiz {
-    question: Question,
+    /// About the spot; `None` asks which kind of opponent this is.
+    question: Option<Question>,
     /// Its line in the coach panel.
     line: usize,
     choices: usize,
@@ -120,7 +148,26 @@ pub struct App {
     /// Skills already asked about in this hand.
     asked: Vec<Skill>,
     /// Questions asked and answered well, by skill.
-    skills: [(u32, u32); 3],
+    skills: [(u32, u32); 5],
+    /// Answers right in a row, by skill: the longer the run, the less
+    /// often that skill is asked about.
+    streaks: [u32; 5],
+    last_skill: Option<Skill>,
+    /// Chooses which question to ask, and whether to ask at all.
+    rng: Rng,
+    /// Sound decisions in a row.
+    run: u32,
+    /// Decisions reviewed so far; the first few are shown in full.
+    reviews_shown: u32,
+    /// The result after each finished hand.
+    totals: Vec<i64>,
+    past: Vec<PastHand>,
+    /// The opponent's likely hands when the player last acted.
+    last_grid: Option<Grid>,
+    /// The player's guess at a mystery opponent (an index into `STYLES`).
+    guess: Option<usize>,
+    /// Hands finished when the guess was last asked for.
+    guess_asked: Option<u64>,
     last_review: Option<Review>,
     queue: VecDeque<(Ask, Option<serde_json::Value>, Option<String>)>,
     inflight: Option<Inflight>,
@@ -151,7 +198,17 @@ impl App {
             spot: None,
             quiz: None,
             asked: Vec::new(),
-            skills: [(0, 0); 3],
+            skills: [(0, 0); 5],
+            streaks: [0; 5],
+            last_skill: None,
+            rng: Rng::new(0),
+            run: 0,
+            reviews_shown: 0,
+            totals: Vec::new(),
+            past: Vec::new(),
+            last_grid: None,
+            guess: None,
+            guess_asked: None,
             last_review: None,
             queue: VecDeque::new(),
             inflight: None,
@@ -175,6 +232,9 @@ impl App {
                 .to_string(),
         };
         app.say(Speaker::System, intro, None);
+        if let Game::Play { session, .. } = &app.game {
+            app.rng = Rng::new(session.seed() ^ 0xC0AC4);
+        }
         if let Game::Play { session, .. } = &app.game
             && session.opponent_hidden()
             && mode != CoachMode::Off
@@ -232,6 +292,7 @@ impl App {
         self.hand_done = false;
         self.quiz = None;
         self.asked.clear();
+        self.last_grid = None;
         match &self.game {
             Game::Play { session, .. } => {
                 let state = session.state();
@@ -316,7 +377,9 @@ impl App {
 
     fn begin_decision(&mut self) {
         let spot = self.analyse_quietly();
-        if self.mode == CoachMode::Teach {
+        if self.guess_due() {
+            self.ask_for_guess();
+        } else if self.mode == CoachMode::Teach {
             self.ask_question(&spot);
         }
         self.spot = Some(spot);
@@ -329,63 +392,171 @@ impl App {
         }
     }
 
-    /// Asks one question about the spot: the skill practised least so far,
-    /// and never the same skill twice in a hand.
-    fn ask_question(&mut self, spot: &Spot) {
-        let skills = self.skills;
-        let Some(question) = questions(spot)
-            .into_iter()
-            .filter(|q| !self.asked.contains(&q.skill()))
-            .min_by_key(|q| skills[q.skill() as usize].0)
-        else {
+    /// Whether to ask which kind of opponent this is: once there is enough
+    /// to go on, and again every so often in case the player's view changed.
+    fn guess_due(&self) -> bool {
+        let Game::Play { session, .. } = &self.game else {
+            return false;
+        };
+        let finished = session.finished();
+        session.opponent_hidden()
+            && self.mode != CoachMode::Off
+            && self.quiz.is_none()
+            && finished >= 12
+            && self.guess_asked.is_none_or(|at| finished >= at + 15)
+    }
+
+    fn ask_for_guess(&mut self) {
+        let Game::Play { session, .. } = &self.game else {
             return;
         };
-        self.asked.push(question.skill());
-        let (choices, _) = question.choices(spot);
+        self.guess_asked = Some(session.finished());
+        let text = match self.guess {
+            None => "You have seen enough to judge. What kind of player is this?".to_string(),
+            Some(guess) => format!(
+                "You took this for a {}. Still think so?",
+                STYLES[guess].name
+            ),
+        };
+        self.open_quiz(
+            None,
+            text,
+            STYLES.iter().map(|s| s.name.to_string()).collect(),
+        );
+    }
+
+    fn open_quiz(&mut self, question: Option<Question>, text: String, choices: Vec<String>) {
+        let count = choices.len();
         self.coach.push(CoachLine {
             who: Speaker::Coach,
-            text: question.ask(spot),
+            text,
             grade: None,
-            extra: Extra::Choices(choices.clone()),
+            extra: Extra::Choices(choices),
         });
         self.coach_scroll = 0;
         self.quiz = Some(Quiz {
             question,
             line: self.coach.len() - 1,
-            choices: choices.len(),
+            choices: count,
         });
+    }
+
+    /// Asks one question about the spot, or none. Skills answered wrong or
+    /// never tried come up most; a skill answered right several times running
+    /// is asked about less and less, and never twice in a hand or twice in
+    /// succession if there is another to ask.
+    fn ask_question(&mut self, spot: &Spot) {
+        let answered: u32 = self.skills.iter().map(|s| s.0).sum();
+        // Once the player knows the routine, two questions a hand at most.
+        if answered >= 6 && self.asked.len() >= 2 {
+            return;
+        }
+        let candidates: Vec<Question> = drills(spot)
+            .into_iter()
+            .filter(|q| !self.asked.contains(&q.skill()))
+            .collect();
+        let weights: Vec<u64> = candidates
+            .iter()
+            .map(|q| {
+                let skill = q.skill();
+                if Some(skill) == self.last_skill {
+                    1
+                } else if self.skills[skill as usize].0 == 0 {
+                    10
+                } else {
+                    match self.streaks[skill as usize] {
+                        0 => 8,
+                        1 => 5,
+                        2 => 3,
+                        _ => 2,
+                    }
+                }
+            })
+            .collect();
+        let total: u64 = weights.iter().sum();
+        if total == 0 {
+            return;
+        }
+        let mut roll = self.rng.below(total);
+        let mut pick = 0;
+        for (i, &weight) in weights.iter().enumerate() {
+            if roll < weight {
+                pick = i;
+                break;
+            }
+            roll -= weight;
+        }
+        let question = candidates[pick].clone();
+        let skill = question.skill();
+        // The better the player knows it, the more decisions pass in peace;
+        // big pots are worth a question more often.
+        let mut chance = match self.streaks[skill as usize] {
+            0 | 1 => 100,
+            2 => 70,
+            3 => 45,
+            4 => 30,
+            _ => 20,
+        };
+        if spot.pot >= 12 * spot.big_blind {
+            chance += 20;
+        }
+        if answered >= 3 && self.rng.below(100) >= chance {
+            return;
+        }
+        self.asked.push(skill);
+        self.last_skill = Some(skill);
+        let (choices, _) = question.choices(spot);
+        let text = question.ask(spot);
+        self.open_quiz(Some(question), text, choices);
     }
 
     fn answer_question(&mut self, choice: usize) {
         let (Some(quiz), Some(spot)) = (self.quiz.take(), self.spot.clone()) else {
             return;
         };
-        let (choices, right) = quiz.question.choices(&spot);
-        let feedback = quiz.question.answer(&spot, choice);
         self.coach[quiz.line].extra = Extra::None;
-        let skill = &mut self.skills[quiz.question.skill() as usize];
-        skill.0 += 1;
-        if feedback.grade != Grade::Inaccuracy {
-            skill.1 += 1;
-        }
-        self.say(Speaker::You, choices[choice].clone(), None);
-        let mark = match feedback.grade {
-            Grade::Good => "✓ Right. ".to_string(),
-            Grade::Close => "≈ Close. ".to_string(),
-            _ => format!("✗ No: {}. ", choices[right]),
+        let Some(question) = quiz.question else {
+            self.guess = Some(choice);
+            self.say(
+                Speaker::System,
+                format!(
+                    "Noted: {}. Play against that. I'll say whether you were right when you leave.",
+                    STYLES[choice].name
+                ),
+                Some(Grade::Note),
+            );
+            return;
         };
-        self.say(
-            Speaker::System,
-            format!("{mark}{}", feedback.text),
-            Some(feedback.grade),
-        );
+        let (choices, right) = question.choices(&spot);
+        let feedback = question.answer(&spot, choice);
+        let skill = question.skill() as usize;
+        self.skills[skill].0 += 1;
+        if feedback.grade == Grade::Inaccuracy {
+            self.streaks[skill] = 0;
+        } else {
+            self.skills[skill].1 += 1;
+            self.streaks[skill] += 1;
+        }
+        let said = &choices[choice];
+        let text = match feedback.grade {
+            Grade::Good => format!("✓ {}: right. {}", capitalise(said), feedback.text),
+            Grade::Close => format!("≈ {}: close. {}", capitalise(said), feedback.text),
+            _ => format!(
+                "✗ {}? No: {}. {}",
+                capitalise(said),
+                choices[right],
+                feedback.text
+            ),
+        };
+        self.say(Speaker::System, text, Some(feedback.grade));
     }
 
     /// Drops the open question unanswered.
     fn skip_question(&mut self) {
         if let Some(quiz) = self.quiz.take() {
+            // Its line stays, empty and unseen, so later lines keep their places.
             self.coach[quiz.line].extra = Extra::None;
-            self.coach[quiz.line].text.push_str(" (skipped)");
+            self.coach[quiz.line].text.clear();
         }
     }
 
@@ -414,6 +585,7 @@ impl App {
         self.skip_question();
         let before = self.state().clone();
         let coached = self.mode != CoachMode::Off;
+        self.last_grid = self.grid_now();
         let spot = self.spot.take();
         let review = match &mut self.game {
             Game::Play { session, .. } => session
@@ -457,14 +629,24 @@ impl App {
 
     fn show_review(&mut self, review: &Review, _before: &HandState) {
         let fb = &review.feedback;
+        let sound = matches!(fb.grade, Grade::Good | Grade::Close);
+        self.run = if sound { self.run + 1 } else { 0 };
+        self.reviews_shown += 1;
+        // A sound play gets a line, not a lecture, once the player has seen
+        // what a full review looks like. Drills are always shown in full.
+        let detail = if sound && self.reviews_shown > 2 && matches!(self.game, Game::Play { .. }) {
+            Detail::Brief(self.run)
+        } else {
+            Detail::Full
+        };
         self.coach.push(CoachLine {
             who: Speaker::System,
             text: String::new(),
             grade: Some(fb.grade),
-            extra: Extra::Review(Box::new(review.clone())),
+            extra: Extra::Review(Box::new(review.clone()), detail),
         });
         self.coach_scroll = 0;
-        if self.llm.is_some() {
+        if self.llm.is_some() && detail == Detail::Full {
             let facts = self.facts(&review.spot, Some(review.action));
             let fallback = why(&review.spot, review.action).join(" ");
             self.queue
@@ -493,6 +675,7 @@ impl App {
         };
         let record = session.finish_hand().expect("hand is over");
         history::append(log_file, &record)?;
+        self.totals.push(session.total());
         let state = session.state();
         let outcome = state.outcome().unwrap();
         let big_blind = state.config().big_blind;
@@ -531,6 +714,14 @@ impl App {
             Some(_) => format!("you lost {}", bb((-net) as u32, big_blind)),
         };
         let grades: Vec<Grade> = session.reviews().iter().map(|r| r.feedback.grade).collect();
+        self.past.push(PastHand {
+            number: session.hand_no(),
+            hole: state.hole(HERO),
+            position: if state.button() == HERO { "BTN" } else { "BB" },
+            shown: outcome.showdown.then(|| state.hole(1 - HERO)),
+            net,
+            grades: grades.clone(),
+        });
         let lost: f64 = session.reviews().iter().map(|r| r.feedback.loss).sum();
         self.pending_divider = Some((
             format!("End of hand {} · {summary}", session.hand_no()),
@@ -630,6 +821,14 @@ impl App {
                         "What you saw: {}.",
                         observed_text(&session.observed())
                     ));
+                    if let Some(guess) = self.guess {
+                        let name = STYLES[guess].name;
+                        text.push(if name == session.bot_name() {
+                            format!("You took it for a {name}: right.")
+                        } else {
+                            format!("You took it for a {name}: not this time.")
+                        });
+                    }
                 }
                 if self.llm.is_some() && self.mode != CoachMode::Off {
                     let facts = session_facts(session);
@@ -655,6 +854,40 @@ impl App {
             extra: Extra::None,
         });
         self.coach_scroll = 0;
+    }
+
+    /// Opens the latest reviewed decision in full, or closes it again.
+    fn toggle_details(&mut self) {
+        let latest = self
+            .coach
+            .iter_mut()
+            .rev()
+            .find_map(|l| match &mut l.extra {
+                Extra::Review(_, detail) => Some(detail),
+                _ => None,
+            });
+        match latest {
+            Some(detail) => {
+                *detail = match *detail {
+                    Detail::Brief(_) | Detail::Full => Detail::Opened,
+                    Detail::Opened => Detail::Brief(0),
+                };
+                self.coach_scroll = 0;
+            }
+            None => self.flash("Nothing reviewed yet.".into()),
+        }
+    }
+
+    /// The opponent's likely hands right now, for the grid.
+    fn grid_now(&self) -> Option<Grid> {
+        let state = self.state();
+        let mut dead = state.hole(HERO).to_vec();
+        dead.extend_from_slice(state.board());
+        let range = match &self.game {
+            Game::Play { session, .. } => session.range(),
+            Game::Drill { spots, index, .. } => &spots[*index].range,
+        };
+        Some(range_grid(range, &dead))
     }
 
     fn flash(&mut self, text: String) {
@@ -798,6 +1031,7 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Esc => self.confirm_quit = true,
                 KeyCode::PageUp => self.coach_scroll = self.coach_scroll.saturating_add(5),
                 KeyCode::PageDown => self.coach_scroll = self.coach_scroll.saturating_sub(5),
+                KeyCode::Char('d') => self.toggle_details(),
                 _ => {}
             }
             return Ok(());
@@ -827,6 +1061,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') => self.show_numbers = !self.show_numbers,
+            KeyCode::Char('d') => self.toggle_details(),
             KeyCode::PageUp => self.coach_scroll = self.coach_scroll.saturating_add(5),
             KeyCode::PageDown => self.coach_scroll = self.coach_scroll.saturating_sub(5),
             KeyCode::Char(' ') | KeyCode::Enter if legal.is_none() => self.next(),
@@ -963,39 +1198,111 @@ impl App {
         .areas(area);
         self.draw_title(frame, title);
 
-        let wide = body.width >= 110;
-        let (table_area, side) = if wide {
-            let [a, b] =
-                Layout::horizontal([Constraint::Min(60), Constraint::Length(body.width * 2 / 5)])
+        let (width, height) = (body.width, body.height);
+        if width >= 170 {
+            // Three columns: the table, what is known, and the coach.
+            let [table, middle, coach] = Layout::horizontal([
+                Constraint::Length((width * 9 / 25).clamp(60, 90)),
+                Constraint::Min(46),
+                Constraint::Length((width / 3).clamp(50, 96)),
+            ])
+            .areas(body);
+            // Under a felt as tall as its cards need: this hand, and the
+            // hands before it if there is room beside.
+            let lower = if height >= 36 {
+                (height - 31).max(12)
+            } else {
+                7
+            };
+            let [felt, lower] =
+                Layout::vertical([Constraint::Min(17), Constraint::Length(lower)]).areas(table);
+            self.draw_felt(frame, felt);
+            let mut past_shown = false;
+            if lower.width >= 84 && lower.height >= 9 {
+                let [log, past] =
+                    Layout::horizontal([Constraint::Min(40), Constraint::Length(42)]).areas(lower);
+                self.draw_log(frame, log);
+                self.draw_past(frame, past);
+                past_shown = true;
+            } else {
+                self.draw_log(frame, lower);
+            }
+
+            let grid_shown = height >= 34;
+            let mut rest = middle;
+            let opponent = |width: u16, candidates: bool| {
+                self.opponent_lines(width.saturating_sub(2) as usize, !grid_shown, candidates)
+            };
+            if grid_shown && middle.width >= 43 + 32 {
+                // The grid and the opponent side by side.
+                let [top, below] =
+                    Layout::vertical([Constraint::Length(GRID_HEIGHT), Constraint::Min(0)])
+                        .areas(rest);
+                let [grid, beside] =
+                    Layout::horizontal([Constraint::Length(43), Constraint::Min(32)]).areas(top);
+                let lines = opponent(beside.width, true);
+                if lines.is_empty() {
+                    // Drills have no opponent to describe: the grid takes the row.
+                    self.draw_range(frame, top);
+                } else {
+                    self.draw_range(frame, grid);
+                    self.draw_opponent(frame, beside, lines);
+                }
+                rest = below;
+            } else {
+                if grid_shown {
+                    let [top, below] =
+                        Layout::vertical([Constraint::Length(GRID_HEIGHT), Constraint::Min(0)])
+                            .areas(rest);
+                    self.draw_range(frame, top);
+                    rest = below;
+                }
+                let lines = opponent(rest.width, false);
+                let wanted = lines.len() as u16 + 2;
+                if !lines.is_empty() && rest.height >= wanted {
+                    let [top, below] =
+                        Layout::vertical([Constraint::Length(wanted), Constraint::Min(0)])
+                            .areas(rest);
+                    self.draw_opponent(frame, top, lines);
+                    rest = below;
+                }
+            }
+            if !past_shown && rest.height >= 30 {
+                let [top, below] =
+                    Layout::vertical([Constraint::Min(20), Constraint::Length(10)]).areas(rest);
+                self.draw_past(frame, below);
+                rest = top;
+            }
+            if rest.height >= 6 {
+                self.draw_session(frame, rest);
+            }
+            self.draw_coach(frame, coach);
+        } else if width >= 110 {
+            let [table, side] =
+                Layout::horizontal([Constraint::Min(60), Constraint::Length(width * 2 / 5)])
                     .areas(body);
-            (a, b)
+            let grid_shown = self.draw_table(frame, table);
+            let opponent =
+                self.opponent_lines(side.width.saturating_sub(2) as usize, !grid_shown, false);
+            if !opponent.is_empty() && side.height >= 24 {
+                let [top, rest] = Layout::vertical([
+                    Constraint::Length(opponent.len() as u16 + 2),
+                    Constraint::Min(10),
+                ])
+                .areas(side);
+                self.draw_opponent(frame, top, opponent);
+                self.draw_coach(frame, rest);
+            } else {
+                self.draw_coach(frame, side);
+            }
         } else {
             // Stacked: a short table (the latest action is shown on it, so
             // the hand log is dropped) and the coach beneath.
-            let felt = if body.height >= 34 { 20 } else { 16 };
-            let [a, b] =
+            let felt = if height >= 34 { 20 } else { 16 };
+            let [table, coach] =
                 Layout::vertical([Constraint::Length(felt), Constraint::Min(4)]).areas(body);
-            (a, b)
-        };
-        if wide {
-            let [felt, log] =
-                Layout::vertical([Constraint::Min(17), Constraint::Length(7)]).areas(table_area);
-            self.draw_felt(frame, felt);
-            self.draw_log(frame, log);
-        } else {
-            self.draw_felt(frame, table_area);
-        }
-        let opponent = self.opponent_lines(side.width.saturating_sub(2) as usize);
-        if wide && !opponent.is_empty() && side.height >= 24 {
-            let [top, rest] = Layout::vertical([
-                Constraint::Length(opponent.len() as u16 + 2),
-                Constraint::Min(10),
-            ])
-            .areas(side);
-            self.draw_opponent(frame, top, opponent);
-            self.draw_coach(frame, rest);
-        } else {
-            self.draw_coach(frame, side);
+            self.draw_felt(frame, table);
+            self.draw_coach(frame, coach);
         }
         self.draw_controls(frame, controls);
 
@@ -1035,7 +1342,7 @@ impl App {
                         .bold()
                         .fg(color),
                 ];
-                if self.mode != CoachMode::Off && session.reviewed() > 0 {
+                if area.width < 170 && self.mode != CoachMode::Off && session.reviewed() > 0 {
                     left.push("  ·  mistakes cost ".fg(Color::Gray));
                     left.push(
                         fmt_bb(session.given_up(), big_blind)
@@ -1068,9 +1375,14 @@ impl App {
                 String::new(),
             ),
         };
-        if self.skills.iter().any(|s| s.0 > 0) {
-            left.push("  ·  questions ".fg(Color::Gray));
-            left.push(skills_text(&self.skills).into());
+        // On a wide screen the session panel shows these; on a crowded
+        // title they make way.
+        if area.width < 170 && self.skills.iter().any(|s| s.0 > 0) {
+            let questions = format!("  ·  questions {}", skills_text(&self.skills));
+            let used = Line::from(left.clone()).width() + right.len();
+            if used + questions.chars().count() <= area.width as usize {
+                left.push(questions.fg(Color::Gray));
+            }
         }
         let [l, r] =
             Layout::horizontal([Constraint::Min(10), Constraint::Length(right.len() as u16)])
@@ -1087,6 +1399,251 @@ impl App {
         }
     }
 
+    /// The left of a wide screen: the felt, with the hand log beneath and,
+    /// if the screen is tall enough, the opponent's likely hands beside the
+    /// log. Returns whether those were drawn.
+    fn draw_table(&self, frame: &mut Frame, area: Rect) -> bool {
+        if area.height >= 44 && area.width >= 66 {
+            // The felt is as tall as its cards need; beyond that the room
+            // is better spent on the panels.
+            let felt = (area.height - GRID_HEIGHT).min(34);
+            let [felt, lower] =
+                Layout::vertical([Constraint::Length(felt), Constraint::Min(GRID_HEIGHT)])
+                    .areas(area);
+            let [range, log] =
+                Layout::horizontal([Constraint::Length(43), Constraint::Min(20)]).areas(lower);
+            self.draw_felt(frame, felt);
+            self.draw_range(frame, range);
+            self.draw_log(frame, log);
+            true
+        } else {
+            let [felt, log] =
+                Layout::vertical([Constraint::Min(17), Constraint::Length(7)]).areas(area);
+            self.draw_felt(frame, felt);
+            self.draw_log(frame, log);
+            false
+        }
+    }
+
+    /// The opponent's likely hands as a grid of the 169 starting hands. In
+    /// teach mode it lags a decision behind, so it never answers a question
+    /// for the player: `n` shows it live.
+    fn draw_range(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .title(" Their likely hands ".bold().fg(Color::LightRed))
+            .title(Line::from(" brighter = likelier ".fg(Color::Gray)).right_aligned())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(Color::DarkGray));
+        let state = self.state();
+        let live = self.show_numbers && self.spot.is_some();
+        let over = state.outcome().is_some();
+        let (grid, read, caption) = if self.mode == CoachMode::Off {
+            (None, None, "The coach is off.")
+        } else if live {
+            (
+                self.grid_now(),
+                self.spot.as_ref().and_then(|s| s.read),
+                "Right now",
+            )
+        } else if over {
+            (
+                self.grid_now(),
+                self.last_review.as_ref().and_then(|r| r.spot.read),
+                "At the end of the hand",
+            )
+        } else if self.last_grid.is_some() {
+            (
+                self.last_grid,
+                self.last_review.as_ref().and_then(|r| r.spot.read),
+                "When you last acted",
+            )
+        } else {
+            (None, None, "Shown once you act · n peeks")
+        };
+        // A range nothing has narrowed yet is not worth lighting up.
+        let any_two = grid.is_some_and(|g| g.iter().flatten().all(|&x| x > 0.999));
+        let (grid, caption) = if any_two && (live || over) {
+            (None, "Any two cards so far")
+        } else if any_two {
+            (None, "Any two cards when you last acted")
+        } else {
+            (grid, caption)
+        };
+        let mut lines = grid_lines(grid.as_ref(), state.hole(HERO));
+        let gray = Style::new().fg(Color::Gray);
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(format!("{caption} · "), gray),
+            Span::styled(" you ", HERO_CELL),
+        ]));
+        if let Some(read) = read.filter(|_| grid.is_some()) {
+            lines.extend(range_bar(&read, 39));
+        }
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .alignment(Alignment::Center),
+            area,
+        );
+    }
+
+    /// How the session is going: the result hand by hand, what mistakes
+    /// cost and where, what to work on, and the questions answered.
+    fn draw_session(&self, frame: &mut Frame, area: Rect) {
+        let Game::Play { session, .. } = &self.game else {
+            return;
+        };
+        let block = Block::new()
+            .title(" Session ".bold().fg(GOLD))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(Color::DarkGray));
+        let width = area.width.saturating_sub(2) as usize;
+        let big_blind = session.config().big_blind;
+        let gray = Style::new().fg(Color::Gray);
+        let head = |text: &str| Line::from(Span::styled(text.to_string(), gray.bold()));
+        let total = session.total();
+        let color = if total > 0 {
+            Color::LightGreen
+        } else if total < 0 {
+            Color::LightRed
+        } else {
+            Color::Gray
+        };
+        let hands = session.finished();
+        let mut lines = vec![Line::from(vec![
+            Span::styled("RESULT  ", gray.bold()),
+            bb_signed(total, big_blind).bold().fg(color),
+            Span::styled(
+                format!("  after {hands} hand{}", if hands == 1 { "" } else { "s" }),
+                gray,
+            ),
+        ])];
+        if self.totals.len() >= 2 {
+            lines.extend(chart(&self.totals, width, 3));
+        }
+        if self.mode != CoachMode::Off && session.reviewed() > 0 {
+            lines.push(Line::default());
+            let mut cost = vec![
+                Span::styled("MISTAKES COST  ", gray.bold()),
+                fmt_bb(session.given_up(), big_blind)
+                    .bold()
+                    .fg(Color::Yellow),
+            ];
+            if let Some(rate) = per_hundred(session.given_up(), hands, big_blind) {
+                cost.push(Span::styled(format!("  {rate} per 100 hands"), gray));
+            }
+            lines.push(Line::from(cost));
+            let count = |g: Grade| session.grades().get(&g).copied().unwrap_or(0);
+            let parts = [
+                (Grade::Good, "good"),
+                (Grade::Close, "close"),
+                (Grade::Inaccuracy, "inaccurate"),
+                (Grade::Mistake, "mistakes"),
+                (Grade::Blunder, "blunders"),
+            ];
+            let all: u32 = parts.iter().map(|&(g, _)| count(g)).sum();
+            if all > 0 {
+                let mut bar = Vec::new();
+                let mut used = 0;
+                for (i, &(grade, _)) in parts.iter().enumerate() {
+                    let n = if i == parts.len() - 1 {
+                        width - used
+                    } else {
+                        ((count(grade) as f64 / all as f64 * width as f64).round() as usize)
+                            .min(width - used)
+                    };
+                    used += n;
+                    bar.push(Span::styled("█".repeat(n), grade_style(grade)));
+                }
+                lines.push(Line::from(bar));
+                let mut legend = Vec::new();
+                for (grade, name) in parts {
+                    if count(grade) > 0 {
+                        legend.push(Span::styled(
+                            format!(
+                                "{} {}  ",
+                                count(grade),
+                                if count(grade) == 1 {
+                                    name.trim_end_matches('s')
+                                } else {
+                                    name
+                                }
+                            ),
+                            grade_style(grade).remove_modifier(ratatui::style::Modifier::BOLD),
+                        ));
+                    }
+                }
+                lines.push(Line::from(legend));
+            }
+            if self.run >= 3 {
+                lines.push(Line::from(vec![
+                    Span::styled("Run  ", gray),
+                    format!("{} sound decisions in a row", self.run).fg(Color::LightGreen),
+                ]));
+            }
+            let leaks = session.tally().lines();
+            if !leaks.is_empty() {
+                lines.push(Line::default());
+                lines.push(head("WHERE IT GOES"));
+                let by_street: Vec<(Street, f64)> =
+                    [Street::Preflop, Street::Flop, Street::Turn, Street::River]
+                        .iter()
+                        .map(|&street| {
+                            let lost = leaks.iter().filter(|l| l.street == street).map(|l| l.loss);
+                            (street, lost.sum())
+                        })
+                        .collect();
+                let worst = by_street.iter().map(|x| x.1).fold(0.0, f64::max);
+                for (street, lost) in by_street {
+                    lines.push(gauge(
+                        street.name(),
+                        9,
+                        if worst > 0.0 { lost / worst } else { 0.0 },
+                        width.saturating_sub(9 + 9).min(24),
+                        Color::Yellow,
+                        fmt_bb(lost, big_blind),
+                    ));
+                }
+                lines.push(Line::default());
+                lines.push(head("WORK ON"));
+                for (i, leak) in leaks.iter().take(2).enumerate() {
+                    lines.extend(wrap_styled(
+                        Some((format!("{}. ", i + 1), Style::new().fg(GOLD).bold())),
+                        &format!(
+                            "{} on the {} ({}×, {})",
+                            capitalise(leak.leak.label()),
+                            leak.street.name().to_lowercase(),
+                            leak.count,
+                            fmt_bb(leak.loss, big_blind)
+                        ),
+                        Style::new(),
+                        width,
+                    ));
+                }
+            }
+        }
+        if self.skills.iter().any(|s| s.0 > 0) {
+            lines.push(Line::default());
+            lines.push(head("QUESTIONS"));
+            for skill in Skill::ALL {
+                let (asked, right) = self.skills[skill as usize];
+                if asked > 0 {
+                    lines.push(gauge(
+                        skill.name(),
+                        9,
+                        right as f64 / asked as f64,
+                        width.saturating_sub(9 + 9).min(24),
+                        Color::LightCyan,
+                        format!("{right}/{asked}"),
+                    ));
+                }
+            }
+        }
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
     fn draw_felt(&self, frame: &mut Frame, area: Rect) {
         let block = Block::new()
             .borders(Borders::ALL)
@@ -1100,10 +1657,13 @@ impl App {
         let showdown = state.outcome().is_some_and(|o| o.showdown);
         // On a short table the opponent's face-down cards make way.
         let compact = inner.height < 18 && !showdown;
+        // And on a tall one the cards are drawn large.
+        let big = inner.height >= 26 && inner.width >= 48;
+        let seat = if big { 8 } else { 6 };
         let [bot, middle, hero, strip] = Layout::vertical([
-            Constraint::Length(if compact { 2 } else { 6 }),
+            Constraint::Length(if compact { 2 } else { seat }),
             Constraint::Min(4),
-            Constraint::Length(6),
+            Constraint::Length(seat),
             Constraint::Length(2),
         ])
         .areas(inner);
@@ -1111,11 +1671,11 @@ impl App {
         // The bot's seat.
         let bot_seat = 1 - HERO;
         let bot_cards = if showdown {
-            card_row(&state.hole(bot_seat), 0)
+            card_row(&state.hole(bot_seat), 0, big)
         } else if compact {
             Vec::new()
         } else {
-            card_backs(2)
+            card_backs(2, big)
         };
         let mut lines = vec![seat_label(
             &self.opponent_name(),
@@ -1134,7 +1694,7 @@ impl App {
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), bot);
 
         // The board and pot.
-        let mut lines = card_row(state.board(), 5 - state.board().len());
+        let mut lines = card_row(state.board(), 5 - state.board().len(), big);
         lines.push(Line::from(vec![
             "Pot ".fg(Color::Gray),
             bb(state.pot(), big_blind).bold().fg(GOLD),
@@ -1154,7 +1714,7 @@ impl App {
         // The player's seat.
         let hole = state.hole(HERO);
         let mut lines = vec![bet_chip(state.street_commit(HERO), big_blind)];
-        lines.extend(card_row(&hole, 0));
+        lines.extend(card_row(&hole, 0, big));
         let hand = poker::coach::describe_hand(hole, state.board());
         lines.push(seat_label(
             "YOU",
@@ -1231,9 +1791,16 @@ impl App {
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
     }
 
-    /// Who the opponent is, what it has been seen to do and what it is
-    /// likely to hold. Empty when there is nothing to show (drills).
-    fn opponent_lines(&self, width: usize) -> Vec<Line<'static>> {
+    /// Who the opponent is and what it has been seen to do, with what it is
+    /// likely to hold when `with_range` (the grid shows that otherwise) and,
+    /// with `candidates`, the kinds of player a mystery opponent could be.
+    /// Empty when there is nothing to show (drills).
+    fn opponent_lines(
+        &self,
+        width: usize,
+        with_range: bool,
+        candidates: bool,
+    ) -> Vec<Line<'static>> {
         let Game::Play { session, .. } = &self.game else {
             return Vec::new();
         };
@@ -1249,6 +1816,12 @@ impl App {
                 ),
             };
             lines.extend(wrap_styled(None, &read, Style::new().bold(), width));
+            if let Some(guess) = self.guess {
+                lines.push(Line::from(vec![
+                    Span::styled("Your guess: ", gray),
+                    Span::styled(STYLES[guess].name, Style::new().fg(GOLD).bold()),
+                ]));
+            }
         } else if let Some(style) = session.bot().style() {
             lines.extend(wrap_styled(None, style.blurb, Style::new().bold(), width));
             lines.extend(wrap_styled(
@@ -1258,12 +1831,54 @@ impl App {
                 width,
             ));
         }
-        lines.extend(wrap_styled(
-            Some(("Seen: ".into(), gray.bold())),
-            &observed_text(&seen),
-            gray,
-            width,
-        ));
+        let rows = [
+            ("Plays hands", seen.plays()),
+            ("Raises preflop", seen.raises()),
+            ("Folds to bets", seen.folds_to_bets()),
+            ("Bets, not calls", seen.aggression()),
+        ];
+        if rows.iter().all(|r| r.1.is_none()) {
+            lines.push(Line::from(Span::styled("Seen: nothing yet.", gray)));
+        }
+        for (label, share) in rows {
+            if let Some(share) = share {
+                lines.push(gauge(
+                    label,
+                    16,
+                    share,
+                    width.saturating_sub(16 + 5).min(24),
+                    Color::LightRed,
+                    format!("{:.0}%", share * 100.0),
+                ));
+            }
+        }
+        if seen.hands > 0 {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "over {} hand{}",
+                    seen.hands,
+                    if seen.hands == 1 { "" } else { "s" }
+                ),
+                gray,
+            )));
+        }
+        // With room to spare, the kinds of player a mystery could be.
+        if candidates && session.opponent_hidden() && !self.over {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled("IT IS ONE OF", gray.bold())));
+            for style in STYLES {
+                // "A nit: plays few hands, folds to pressure…" in a line.
+                let trait_ = style.blurb.split(": ").nth(1).unwrap_or(style.blurb);
+                let trait_ = trait_.split(',').next().unwrap_or(trait_);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<8}", style.name), Style::new().fg(GOLD).bold()),
+                    Span::styled(trait_.trim_end_matches('.').to_string(), gray),
+                ]));
+            }
+        }
+        if !with_range {
+            return lines;
+        }
         // Its likely hands: now if the numbers are on, else at the last review.
         let read = if self.show_numbers {
             self.spot.as_ref().map(|s| s.read)
@@ -1271,7 +1886,14 @@ impl App {
             self.last_review.as_ref().map(|r| r.spot.read)
         };
         match read {
-            Some(Some(read)) => lines.extend(range_bar(&read, width)),
+            Some(Some(read)) => {
+                let mut bar = range_bar(&read, width.saturating_sub(8));
+                bar[0].spans.insert(
+                    0,
+                    Span::styled("Holding ", Style::new().fg(Color::Gray).bold()),
+                );
+                lines.extend(bar);
+            }
             Some(None) => lines.push(Line::from(Span::styled(
                 "Holding: any two cards so far.",
                 gray,
@@ -1295,6 +1917,59 @@ impl App {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(Color::DarkGray));
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
+    /// The hands before this one, newest first: cards, seat, result and a
+    /// dot for each decision.
+    fn draw_past(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .title(" Earlier hands ".bold())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(Color::DarkGray));
+        let big_blind = self.state().config().big_blind;
+        let gray = Style::new().fg(Color::Gray);
+        let card = |c: Card| {
+            Span::styled(
+                c.pretty(false),
+                Style::new()
+                    .fg(suit_color(c))
+                    .bg(Color::Rgb(245, 243, 236))
+                    .bold(),
+            )
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        for hand in self.past.iter().rev().take(area.height as usize) {
+            let color = match hand.net {
+                n if n > 0 => Color::LightGreen,
+                n if n < 0 => Color::LightRed,
+                _ => Color::Gray,
+            };
+            let mut spans = vec![
+                Span::styled(format!("{:>3} ", hand.number), gray),
+                card(hand.hole[0]),
+                card(hand.hole[1]),
+                Span::styled(format!(" {:<3}", hand.position), gray),
+                Span::styled(
+                    format!("{:>8} ", bb_signed(hand.net, big_blind)),
+                    Style::new().fg(color).bold(),
+                ),
+            ];
+            for &grade in hand.grades.iter().take(6) {
+                spans.push(Span::styled("●", grade_style(grade)));
+            }
+            if let Some(shown) = hand.shown {
+                let pad = 7usize.saturating_sub(hand.grades.len().min(6));
+                spans.push(Span::styled(format!("{}vs ", " ".repeat(pad)), gray));
+                spans.push(card(shown[0]));
+                spans.push(card(shown[1]));
+            }
+            lines.push(Line::from(spans));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled("None yet.", gray)));
+        }
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 
@@ -1334,8 +2009,12 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for line in &self.coach {
             match &line.extra {
-                Extra::Review(review) => {
-                    lines.extend(review_card(review, width, self.llm.is_none()));
+                Extra::Review(review, detail) => {
+                    lines.extend(match detail {
+                        Detail::Brief(run) => review_brief(review, *run, width),
+                        Detail::Full => review_card(review, width, self.llm.is_none()),
+                        Detail::Opened => review_card(review, width, true),
+                    });
                     lines.push(Line::default());
                     continue;
                 }
@@ -1462,6 +2141,9 @@ impl App {
                         key("n"),
                         " numbers  ".into(),
                     ]);
+                    if area.width >= 130 {
+                        line.extend([key("d"), " last review  ".into()]);
+                    }
                 }
                 line.extend([key("?"), " help".into()]);
             }
@@ -1474,6 +2156,8 @@ impl App {
                 " next hand  ".bold().fg(GOLD),
                 key("/"),
                 " ask coach  ".into(),
+                key("d"),
+                " last review  ".into(),
                 key("q"),
                 " quit".into(),
             ]);
@@ -1501,7 +2185,7 @@ fn per_hundred(given_up: f64, hands: u64, big_blind: u32) -> Option<String> {
 }
 
 /// "Reads 2/3 · Equity 4/6", for the skills asked about so far.
-fn skills_text(skills: &[(u32, u32); 3]) -> String {
+fn skills_text(skills: &[(u32, u32)]) -> String {
     Skill::ALL
         .iter()
         .filter(|&&skill| skills[skill as usize].0 > 0)
@@ -1556,6 +2240,201 @@ fn grade_icon(grade: Grade) -> &'static str {
         Grade::Blunder => "✗✗",
         Grade::Note => "·",
     }
+}
+
+/// A sound decision in a line: the verdict, what the play was worth and
+/// what came next to it.
+fn review_brief(review: &Review, run: u32, width: usize) -> Vec<Line<'static>> {
+    let (spot, fb) = (&review.spot, &review.feedback);
+    let mut verdict = format!("{} {}", grade_icon(fb.grade), fb.grade.label());
+    if run >= 3 {
+        verdict.push_str(&format!(" ×{run}"));
+    }
+    verdict.push(' ');
+    let priced = |action: Action, ev: f64| {
+        format!(
+            "{} {}",
+            spot.phrase(action),
+            fmt_bb_signed(ev, spot.big_blind)
+        )
+    };
+    let mut rest = match spot.ev(review.action) {
+        Some(ev) => format!("· {}", priced(review.action, ev)),
+        None => format!("· {}", spot.phrase(review.action)),
+    };
+    let ranked = spot.ranked(Some(review.action));
+    let other = ranked.iter().find(|&&(a, _)| a != review.action);
+    if let (Some(&(action, ev)), Some(&(best, _))) = (other, ranked.first()) {
+        let label = if best == review.action {
+            "next"
+        } else {
+            "best"
+        };
+        rest.push_str(&format!(" · {label}: {}", priced(action, ev)));
+    }
+    wrap_styled(
+        Some((verdict, grade_style(fb.grade))),
+        &rest,
+        Style::new().fg(Color::Gray),
+        width,
+    )
+}
+
+/// "Label      ████░░░░  tail": a share between 0 and 1 as a bar.
+fn gauge(
+    label: &str,
+    label_width: usize,
+    share: f64,
+    cells: usize,
+    color: Color,
+    tail: String,
+) -> Line<'static> {
+    let filled = ((share.clamp(0.0, 1.0) * cells as f64).round() as usize).min(cells);
+    Line::from(vec![
+        Span::styled(
+            format!("{label:<label_width$}"),
+            Style::new().fg(Color::Gray),
+        ),
+        Span::styled("█".repeat(filled), Style::new().fg(color)),
+        Span::styled(
+            "░".repeat(cells - filled),
+            Style::new().fg(Color::Rgb(60, 64, 72)),
+        ),
+        Span::styled(format!(" {tail}"), Style::new().bold()),
+    ])
+}
+
+/// A running total as a small column chart, `height` rows tall: one column
+/// per hand, the latest hands if there are more than fit. Green above zero.
+fn chart(totals: &[i64], width: usize, height: usize) -> Vec<Line<'static>> {
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let mut points = vec![0];
+    points.extend_from_slice(totals);
+    let points = &points[points.len().saturating_sub(width.max(1))..];
+    // Few hands: wider columns, so the chart is not a sliver.
+    let column = (width / points.len().max(1)).clamp(1, 4);
+    let low = points.iter().copied().min().unwrap_or(0);
+    let high = points.iter().copied().max().unwrap_or(0);
+    let span = (high - low).max(1) as f64;
+    (0..height)
+        .rev()
+        .map(|row| {
+            let spans: Vec<Span<'static>> = points
+                .iter()
+                .map(|&value| {
+                    let level = ((value - low) as f64 / span * (height * 8 - 1) as f64).round()
+                        as usize
+                        + 1;
+                    let cell = level.saturating_sub(row * 8).min(8);
+                    let color = if value >= 0 {
+                        Color::Rgb(90, 190, 120)
+                    } else {
+                        Color::Rgb(210, 90, 90)
+                    };
+                    Span::styled(
+                        BLOCKS[cell].to_string().repeat(column),
+                        Style::new().fg(color),
+                    )
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Rows of the range panel: the grid, its caption and the make-up bar.
+const GRID_HEIGHT: u16 = 13 + 2 + 2 + 2;
+
+const HERO_CELL: Style = Style::new()
+    .fg(Color::Black)
+    .bg(Color::Rgb(110, 210, 230))
+    .add_modifier(ratatui::style::Modifier::BOLD);
+
+/// Where a starting hand sits in the grid: aces first, suited hands above
+/// the diagonal.
+fn grid_cell(hole: [Card; 2]) -> (usize, usize) {
+    let (a, b) = (hole[0].rank() as usize, hole[1].rank() as usize);
+    let (high, low) = (12 - a.max(b), 12 - a.min(b));
+    if hole[0].suit() == hole[1].suit() {
+        (high, low)
+    } else {
+        (low, high)
+    }
+}
+
+/// How likely each starting hand is in `range`, against the likeliest,
+/// leaving out combinations that use a `dead` card.
+fn range_grid(range: &Range, dead: &[Card]) -> Grid {
+    let mut sum = [[0.0f64; 13]; 13];
+    let mut count = [[0u32; 13]; 13];
+    for (i, &weight) in range.weights().iter().enumerate() {
+        let hole = combo(i);
+        if dead.iter().any(|d| hole.contains(d)) {
+            continue;
+        }
+        let (row, col) = grid_cell(hole);
+        sum[row][col] += weight;
+        count[row][col] += 1;
+    }
+    let mut grid = [[0.0f32; 13]; 13];
+    let mut top = 0.0f64;
+    for row in 0..13 {
+        for col in 0..13 {
+            if count[row][col] > 0 {
+                sum[row][col] /= count[row][col] as f64;
+                top = top.max(sum[row][col]);
+            }
+        }
+    }
+    for row in 0..13 {
+        for col in 0..13 {
+            if top > 0.0 {
+                grid[row][col] = (sum[row][col] / top) as f32;
+            }
+        }
+    }
+    grid
+}
+
+/// The 169 starting hands, each lit by how likely it is; all dim without a
+/// `grid`. The player's own hand is marked.
+fn grid_lines(grid: Option<&Grid>, hero: [Card; 2]) -> Vec<Line<'static>> {
+    const RANKS: [char; 13] = [
+        'A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2',
+    ];
+    let mine = grid_cell(hero);
+    (0..13)
+        .map(|row| {
+            let spans: Vec<Span<'static>> = (0..13)
+                .map(|col| {
+                    let (high, low) = (RANKS[row.min(col)], RANKS[row.max(col)]);
+                    let kind = match row.cmp(&col) {
+                        std::cmp::Ordering::Less => 's',
+                        std::cmp::Ordering::Greater => 'o',
+                        std::cmp::Ordering::Equal => ' ',
+                    };
+                    let heat = grid.map_or(0.0, |g| g[row][col]) as f64;
+                    let mix =
+                        |from: u8, to: u8| (from as f64 + (to as f64 - from as f64) * heat) as u8;
+                    let style = if (row, col) == mine {
+                        HERO_CELL
+                    } else {
+                        Style::new()
+                            .bg(Color::Rgb(mix(26, 226), mix(30, 140), mix(38, 50)))
+                            .fg(if heat > 0.5 {
+                                Color::Black
+                            } else if heat > 0.04 {
+                                Color::Rgb(190, 190, 190)
+                            } else {
+                                Color::Rgb(88, 92, 102)
+                            })
+                    };
+                    Span::styled(format!("{high}{low}{kind}"), style)
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// A reviewed decision: the verdict, the spot, the options compared and,
@@ -1826,42 +2705,57 @@ fn suit_color(card: Card) -> Color {
     }
 }
 
-/// Cards as small boxes, side by side, with `empty` blank slots after them.
-fn card_row(cards: &[Card], empty: usize) -> Vec<Line<'static>> {
+/// Cards as boxes, side by side, with `empty` blank slots after them:
+/// four columns by three rows, or seven by five when `big`.
+fn card_row(cards: &[Card], empty: usize, big: bool) -> Vec<Line<'static>> {
     let face = Style::new().bg(Color::Rgb(245, 243, 236));
-    let mut rows = vec![Vec::new(), Vec::new(), Vec::new()];
+    let (wide, tall) = if big { (7, 5) } else { (4, 3) };
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(); tall];
     for &card in cards {
         let text = card.pretty(false);
         let (rank, suit) = text.split_at(1);
         let ink = face.fg(suit_color(card)).bold();
-        rows[0].push(Span::styled(format!("{rank}   "), ink));
-        rows[1].push(Span::styled(format!(" {suit}  "), ink));
-        rows[2].push(Span::styled(format!("   {rank}"), ink));
-        for row in &mut rows {
+        for (i, row) in rows.iter_mut().enumerate() {
+            let cell = if i == 0 {
+                format!("{rank:<wide$}")
+            } else if i == tall - 1 {
+                format!("{rank:>wide$}")
+            } else if i == tall / 2 {
+                format!("{suit:^wide$}")
+            } else {
+                " ".repeat(wide)
+            };
+            row.push(Span::styled(cell, ink));
             row.push(Span::raw(" "));
         }
     }
     let slot = Style::new().fg(Color::Rgb(60, 130, 90));
     for _ in 0..empty {
-        rows[0].push(Span::styled("┌──┐", slot));
-        rows[1].push(Span::styled("│  │", slot));
-        rows[2].push(Span::styled("└──┘", slot));
-        for row in &mut rows {
+        for (i, row) in rows.iter_mut().enumerate() {
+            let cell = if i == 0 {
+                format!("┌{}┐", "─".repeat(wide - 2))
+            } else if i == tall - 1 {
+                format!("└{}┘", "─".repeat(wide - 2))
+            } else {
+                format!("│{}│", " ".repeat(wide - 2))
+            };
+            row.push(Span::styled(cell, slot));
             row.push(Span::raw(" "));
         }
     }
     rows.into_iter().map(Line::from).collect()
 }
 
-fn card_backs(n: usize) -> Vec<Line<'static>> {
+fn card_backs(n: usize, big: bool) -> Vec<Line<'static>> {
     let back = Style::new()
         .fg(Color::Rgb(150, 40, 50))
         .bg(Color::Rgb(90, 20, 30));
-    (0..3)
+    let (wide, tall) = if big { (7, 5) } else { (4, 3) };
+    (0..tall)
         .map(|_| {
             let mut spans = Vec::new();
             for _ in 0..n {
-                spans.push(Span::styled("╳╳╳╳", back));
+                spans.push(Span::styled("╳".repeat(wide), back));
                 spans.push(Span::raw(" "));
             }
             Line::from(spans)
@@ -1877,7 +2771,8 @@ fn cards_text(cards: &[Card]) -> String {
         .join(" ")
 }
 
-/// The bot's likely hands as a stacked bar with its legend beneath.
+/// What a range is made of, as a stacked bar `width` cells long with its
+/// legend beneath.
 fn range_bar(read: &Profile, width: usize) -> Vec<Line<'static>> {
     let parts = [
         ("strong", read.strong, Color::Rgb(210, 70, 70)),
@@ -1885,9 +2780,8 @@ fn range_bar(read: &Profile, width: usize) -> Vec<Line<'static>> {
         ("draws", read.draws, Color::Rgb(90, 150, 220)),
         ("weak", read.weak, Color::Rgb(120, 120, 120)),
     ];
-    let label = "Holding ";
-    let cells = width.saturating_sub(label.len()).clamp(10, 48);
-    let mut bar = vec![Span::styled(label, Style::new().fg(Color::Gray).bold())];
+    let cells = width.clamp(10, 48);
+    let mut bar = Vec::new();
     let mut used = 0;
     for (i, (_, share, color)) in parts.iter().enumerate() {
         // The last part takes what is left, so rounding never changes the length.
@@ -1951,6 +2845,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "answer the coach's question; esc skips it, or just act",
         ),
         ("n", "show or hide your equity, the price and the best play"),
+        ("d", "open or close the last review in full"),
         ("PgUp PgDn", "scroll the coach"),
         ("space", "next hand"),
         ("q", "leave the table"),
@@ -2093,7 +2988,7 @@ mod tests {
         assert!(
             app.coach
                 .iter()
-                .any(|l| matches!(l.extra, Extra::Review(_))),
+                .any(|l| matches!(l.extra, Extra::Review(..))),
             "no review card"
         );
     }
@@ -2169,6 +3064,92 @@ mod tests {
             "no end-of-hand divider"
         );
         assert!(screen(&app, 140, 44).contains("── End of hand 1"));
+    }
+
+    #[test]
+    fn a_wide_screen_shows_the_range_the_session_and_earlier_hands() {
+        let mut app = play_app(CoachMode::After);
+        settle(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+        for (w, h) in [(250, 55), (180, 40), (170, 30), (140, 48)] {
+            let text = screen(&app, w, h);
+            assert!(text.contains("Coach") && text.contains("Hand"), "{w}x{h}");
+            if h >= 34 {
+                assert!(text.contains("Their likely hands"), "{w}x{h}:\n{text}");
+                assert!(text.contains("AKs") && text.contains("72o"), "{w}x{h}");
+            }
+        }
+        let text = screen(&app, 250, 55);
+        assert!(text.contains("Session") && text.contains("Earlier hands"));
+    }
+
+    #[test]
+    fn the_last_review_opens_and_closes() {
+        let mut app = play_app(CoachMode::After);
+        settle(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+        let detail = |app: &App| {
+            app.coach.iter().rev().find_map(|l| match l.extra {
+                Extra::Review(_, detail) => Some(detail),
+                _ => None,
+            })
+        };
+        assert!(detail(&app) == Some(Detail::Full));
+        press(&mut app, KeyCode::Char('d'));
+        assert!(detail(&app) == Some(Detail::Opened));
+        press(&mut app, KeyCode::Char('d'));
+        assert!(matches!(detail(&app), Some(Detail::Brief(_))));
+        assert!(screen(&app, 140, 44).contains("next:") || screen(&app, 140, 44).contains("best:"));
+    }
+
+    #[test]
+    fn questions_thin_out_as_they_are_answered_right() {
+        let asked = |streak: u32| {
+            let mut app = play_app(CoachMode::Teach);
+            settle(&mut app);
+            app.skills = [(8, 8); 5];
+            app.streaks = [streak; 5];
+            let spot = app.analyse_quietly();
+            let mut count = 0;
+            for _ in 0..200 {
+                app.quiz = None;
+                app.asked.clear();
+                app.ask_question(&spot);
+                count += u32::from(app.quiz.is_some());
+            }
+            count
+        };
+        let (fresh, practised) = (asked(0), asked(6));
+        assert_eq!(fresh, 200);
+        assert!(practised < 90, "{practised}");
+    }
+
+    #[test]
+    fn a_mystery_opponent_is_guessed_at() {
+        let mut app = play_app(CoachMode::After);
+        if let Game::Play { session, hands, .. } = &mut app.game {
+            session.hide_opponent();
+            *hands = None;
+        }
+        for _ in 0..2000 {
+            settle(&mut app);
+            if app.quiz.as_ref().is_some_and(|q| q.question.is_none()) {
+                break;
+            }
+            press(&mut app, KeyCode::Char('f'));
+            press(&mut app, KeyCode::Char('x'));
+            press(&mut app, KeyCode::Char(' '));
+        }
+        assert!(
+            app.coach
+                .iter()
+                .any(|l| l.text.contains("What kind of player")),
+            "never asked"
+        );
+        press(&mut app, KeyCode::Char('3'));
+        assert_eq!(app.guess, Some(2));
+        assert!(app.quiz.is_none());
+        assert!(screen(&app, 250, 55).contains("Your guess: nit"));
     }
 
     #[test]

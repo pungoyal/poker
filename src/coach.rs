@@ -615,7 +615,7 @@ impl Spot {
         }
     }
 
-    /// The bet being faced, sized the way [`size_words`](Spot::size_words)
+    /// The bet being faced, sized the way `size_words`
     /// sizes the player's own: "a 75% pot bet", "a raise to 3x". `None` with
     /// nothing to call, or before the flop when only the big blind is faced:
     /// the blinds are not a bet anyone chose.

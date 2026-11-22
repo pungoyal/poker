@@ -532,7 +532,7 @@ kbd {
   background: var(--panel);
   border: 1px solid var(--line-soft);
 }
-.tile.wide { flex-grow: 1.7; }
+.tile.wide { flex-grow: 2.4; }
 .tile-label {
   font-size: 10px;
   letter-spacing: 0.07em;
@@ -1040,7 +1040,7 @@ input[type="range"]:disabled { opacity: 0.4; cursor: default; }
 /* ---- overlays ------------------------------------------------------------ */
 
 .menu {
-  inset: 54px 10px auto auto;
+  inset: calc(54px + env(safe-area-inset-top, 0px)) 10px auto auto;
   margin: 0;
   padding: 6px;
   min-width: 250px;
@@ -1062,6 +1062,8 @@ input[type="range"]:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
 }
 .menu button:hover, .menu button:focus-visible { background: var(--panel); }
+.menu::backdrop { background: transparent; }
+.menu:modal { overscroll-behavior: contain; }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
 
 .dialog {
@@ -1139,9 +1141,11 @@ input[type="range"]:disabled { opacity: 0.4; cursor: default; }
 @media (max-width: 480px) { .choices { grid-template-columns: 1fr; } }
 
 .field-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
-.field { display: grid; gap: 4px; flex: 1; min-width: 120px; font-weight: 600; font-size: 13px; }
+.field { display: grid; gap: 4px; flex: 1 1 150px; min-width: 0; font-weight: 600; font-size: 13px; }
 .field small { font-weight: 400; color: var(--dim); }
 .field input, .field select {
+  width: 100%;
+  min-width: 0;
   min-height: max(38px, var(--target));
   padding: 0 10px;
   border-radius: 9px;

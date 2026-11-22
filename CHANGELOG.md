@@ -8,6 +8,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A web front end, now the way to play. The engine, the opponents and the
+  coach are compiled to WebAssembly and run in the browser, on a laptop or a
+  phone; nothing of the game runs on a server. It is a static site (`web/www`
+  after `web/build.sh`), served by the Docker image and published to GitHub
+  Pages by the Deploy workflow.
+- The table: cards and the pot on a felt, each player's bet and last action
+  beside their seat, one tap or key per action, and bet sizes as presets, a
+  slider and an amount in big blinds. An all-in deals the remaining streets
+  one after another before the result.
+- Reviews as cards: a sound play in one line, a mistake opened in full with
+  every option drawn as a bar, yours and the best marked, how often each bet
+  gets a fold and your equity when called.
+- Questions answered with one tap, with the right answer and yours marked.
+- Panels for the opponent (its likely hands as a grid, what they are made of,
+  its tendencies as gauges, the four kinds it could be) and the session (the
+  result hand by hand as a chart, what mistakes cost and on which street,
+  what to work on, question scores, the hand's action log and earlier hands).
+- Layouts for every screen: four columns on a very wide one, three or two on
+  a laptop, and on a phone the table and the buttons with the rest behind
+  tabs, upright or on its side.
+- Sessions that survive a reload: a session is saved as its seed and your
+  actions and resumed by replaying them, on the same hand. A save that does
+  not replay to the same results is refused.
+- Leaks and drills in the menu, from the hands kept in the browser; export
+  and import of those hands as a file.
+- Claude as the coach with your own API key (Settings), called straight from
+  the browser.
+- Offline play once loaded, and a manifest for adding it to a home screen.
+
+### Removed
+
+- The terminal client: the full-screen table, the plain line mode and the
+  `replay`, `leaks` and `drill` subcommands, along with the release binaries.
+  The web front end replaces them; drills and leaks are in its menu.
+
+### Changed
+
+- The Docker image serves the web app on port 8080 instead of running the
+  terminal client.
+
+### Earlier, in the terminal client
+
 - A layout for wide terminals (170 columns or more): the table, a middle
   column of what is known, and the coach. The felt is no taller or wider than
   its cards need, and draws them large when there is room.

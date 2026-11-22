@@ -1,4 +1,5 @@
-//! Heads-up No-Limit Hold'em engine, opponents and coach.
+//! Heads-up No-Limit Hold'em engine, opponents and coach. Pure: no input,
+//! output, clocks or global state. The browser client in `web/` sits on top.
 
 pub mod analysis;
 pub mod bot;

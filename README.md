@@ -1,7 +1,8 @@
+
 <h1 align="center">♠ poker</h1>
 
 <p align="center">
-  <strong>A heads-up No-Limit Hold'em trainer for the terminal.</strong><br>
+  <strong>A heads-up No-Limit Hold'em trainer that runs in your browser.</strong><br>
   Play the kinds of player you meet at a home game, with a coach that teaches you to read and beat each one.
 </p>
 
@@ -11,15 +12,25 @@
   <img alt="MSRV 1.88" src="https://img.shields.io/badge/rust-1.88%2B-orange.svg">
 </p>
 
+<p align="center">
+  <img alt="The table on a laptop: your cards and the board on a felt, the opponent's likely hands as a grid, and the coach's review of a decision with every option priced" src="docs/table.png" width="720">
+  <img alt="The same session on a phone: the table, the coach's question and the action buttons" src="docs/phone.png" width="184">
+</p>
+
 ---
 
 A trainer for getting better at heads-up No-Limit Hold'em. You play the four
 kinds of player every home game has (a sound regular, a calling station, a nit
-and a maniac) at a full-screen table. By default you are not told which one you
-face: you read it from what it does. A coach watches every decision: before you
-act it asks one quick question, and after you act it shows what your choice was
-worth next to the better options, and why. Your mistakes are tracked across
-sessions, and `poker drill` replays the costliest ones as practice.
+and a maniac). By default you are not told which one you face: you read it from
+what it does. A coach watches every decision: before you act it asks one quick
+question, and after you act it shows what your choice was worth next to the
+better options, and why. Your mistakes are tracked across sessions, and the
+drill replays the costliest ones as practice.
+
+It is a static web page. The rules engine, the opponents and the coach are
+compiled to WebAssembly and run in your browser, on a laptop or a phone, online
+or off. Nothing of the game runs on a server and your hands never leave the
+device.
 
 ## Features
 
@@ -30,7 +41,7 @@ sessions, and `poker drill` replays the costliest ones as practice.
 - **A mystery opponent, by default.** One of the four is chosen in secret. The
   opponent panel shows what it has been seen to do (hands played, raises,
   folds to bets, bets against calls); you work out who it is and adjust. It is
-  named when you leave.
+  named when the session ends.
 - **A coach that reads the opponent.** Every bot publishes its strategy, so the
   coach narrows the bot's likely hands with each action it takes (Bayes' rule)
   and measures your equity against those hands, not against any two cards. It
@@ -40,31 +51,34 @@ sessions, and `poker drill` replays the costliest ones as practice.
 - **Questions that follow what you need.** In the default `teach` mode the
   coach asks before a decision: read the bot's range, estimate your equity,
   work out the price, count your outs, or judge how often a bet gets a fold.
-  You answer with a number key. Skills you get wrong come up more; a skill you
-  keep getting right comes up less and less, and never twice running. Against
-  a mystery opponent it also asks, now and then, who you think you are facing.
-- **Reviews you can scan.** A mistake gets the full card: the verdict, what it
-  cost, the top options side by side with yours marked, and the facts that
-  decided it. A sound play gets one line; `d` opens it in full.
+  You answer with one tap or a number key. Skills you get wrong come up more;
+  a skill you keep getting right comes up less and less, and never twice
+  running. Against a mystery opponent it also asks, now and then, who you
+  think you are facing.
+- **Reviews you can scan.** A sound play gets one line. A mistake opens in
+  full: the verdict, what it cost, every option as a bar with yours and the
+  best marked, how often each bet gets a fold, and the facts that decided it.
 - **The opponent's range, drawn.** A grid of the 169 starting hands, lit by
   how likely each is after everything the bot has done, with your own hand
   marked. In `teach` mode it lags one decision behind so it never answers a
-  question for you; `n` shows it live.
-- **An LLM coach.** With an Anthropic API key, Claude explains every review in
-  its own words and answers your questions (press `/` at any time), working
-  only from the engine's exact numbers.
-- **Leaks and drills.** `poker leaks` finds your costliest recurring mistakes
-  across sessions; `poker drill` replays them as practice spots.
-- **A full-screen table that uses the screen.** Cards on a felt, the decision
-  in numbers under your seat, one-key actions and a bet slider with pot-sized
-  presets. A wide terminal adds the range grid, the opponent's tendencies as
-  gauges, a session panel (the result hand by hand, what mistakes cost and on
-  which street, what to work on, question scores), the hand's action log and
-  a list of earlier hands. Narrower terminals drop panels, not the table. A
-  plain line mode is kept for pipes and transcripts (`--plain`).
-- **Correct, reproducible and verifiable.** A deterministic rules engine, a fast
-  evaluator, seeded deals (`--seed`), and hand histories that `poker replay`
-  re-runs and checks against their seed.
+  question for you; Peek shows it live.
+- **A table made for the decision.** The cards and the pot on a felt, one tap
+  or one key for every action, bet sizes as presets, a slider and an amount.
+  A wide screen shows the table, the opponent, the session and the coach side
+  by side; a phone keeps the table and the buttons under your thumb and puts
+  the rest behind tabs.
+- **A session you can leave.** Close the tab mid-hand and the session is
+  there when you come back, on the same hand. It works offline once loaded
+  and can be added to a phone's home screen.
+- **Leaks and drills.** Finished hands are kept in the browser. The menu shows
+  your costliest recurring mistakes across sessions and replays them as
+  practice spots.
+- **An LLM coach.** With your own Anthropic API key, Claude explains every
+  full review in its own words and answers your questions, working only from
+  the engine's exact numbers.
+- **Correct and reproducible.** A deterministic rules engine, a fast
+  evaluator and seeded deals: the same seed deals the same session, and a
+  saved session is verified hand by hand when it is resumed.
 
 ## Quick start
 
@@ -72,108 +86,68 @@ With Docker (nothing else needed):
 
 ```sh
 git clone https://github.com/pungoyal/poker && cd poker
-docker compose run --rm poker
+docker compose up --build
 ```
+
+Then open <http://localhost:8080>.
 
 With Rust 1.88 or newer:
 
 ```sh
-cargo install --git https://github.com/pungoyal/poker
-poker
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+./web/build.sh
+python3 -m http.server --directory web/www 8080
 ```
 
-For the LLM coach, set an API key first (otherwise the coach uses the engine's
-own words):
-
-```sh
-export ANTHROPIC_API_KEY=sk-ant-...
-poker
-```
-
-Prebuilt binaries for Linux, macOS and Windows are attached to each
-[release](https://github.com/pungoyal/poker/releases).
+`web/www` is then a complete static site: copy it to any web host to play from
+anywhere. The [Deploy workflow](.github/workflows/pages.yml) publishes it to
+GitHub Pages on every push to `main`, once Pages is enabled for the repository
+with "GitHub Actions" as its source.
 
 ## Playing
 
-```
- ♠ poker   Hand 2  ·  vs station  ·  result -4bb  ·  mistakes cost 3.83bb (383bb per 100 hands)         seed 5
-╭──────────────────────────────────────────────────────────────────╮╭ Opponent · station ──────────────────────╮
-│                      STATION   button  ·  99bb                   ││A calling station: plays most hands,      │
-│                            ╳╳╳╳ ╳╳╳╳                             ││limps, calls far too much, rarely raises. │
-│                            ╳╳╳╳ ╳╳╳╳                             ││Beat it: Never bluff. Bet your good hands │
-│                            ╳╳╳╳ ╳╳╳╳                             ││big and often; its raises mean strength.  │
-│                                                                  ││Plays hands     ░░░░░░░░░░░░░░░░░░░░░ 0%  │
-│                                                                  ││Raises preflop  ░░░░░░░░░░░░░░░░░░░░░ 0%  │
-│                     9    7    4    ┌──┐ ┌──┐                     ││Bets, not calls █████████████████████ 100%│
-│                      ♣    ♣    ♣   │  │ │  │                     ││over 1 hand                               │
-│                        9    7    4 └──┘ └──┘                     ││Holding ██████████████████████████████████│
-│                        Pot 2bb   ·   Flop                        ││strong 1%  medium 33%  draws 0%  weak 65% │
-│                                                                  │╰──────────────────────────────────────────╯
-│                            K    8                                │╭ Coach ───────────────────────────────────╮
-│                             ♣    ♦                               ││  Raising to 2.5bb (75% …  +2.44bb        │
-│                               K    8                             ││  Raising to 2bb (50% po…  +2.16bb        │
-│                    ▶  YOU   big blind  ·  99bb                   ││▶ Checking                 +1.61bb  you   │
-│                  king high · flush draw (9 outs)                 ││· Raising to 3bb (100% pot) gets folds    │
-│                         Stacks 49.5× pot                         ││21%; called, you win 59%. Folds alone need│
-│             n  peek at your equity and the best play             ││50%: folds fall short; the value is in the│
-╰──────────────────────────────────────────────────────────────────╯│calls.                                    │
-╭ Hand ────────────────────────────────────────────────────────────╮│· Checking lets worse hands reach showdown│
-│Hand 2 · you are on the big blind                                 ││free.                                     │
-│Bot calls 0.5bb.                                                  ││                                          │
-│You check.                                                        ││Coach How many cards complete your draw?  │
-│── Flop 9♣ 7♣ 4♣                                                  ││ 1  4   2  6   3  9   4  12               │
-│                                                                  ││                                          │
-╰──────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-4  answer the coach   esc  skip   or act:   x  check   b  bet   a  all-in 99bb
-```
-
-That is a 112-column terminal. From 170 columns the table gains a middle
-column: the opponent's likely hands as a grid, its tendencies, and a session
-panel; a tall window adds a list of earlier hands.
-
 Both players start every hand with 100 big blinds and the button alternates.
+A new session (in the menu) chooses the opponent, how the coach helps, the
+stacks and, if you want the same cards again, a seed.
 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
-| `f` | fold | `b` or `r` | bet or raise: pick a size, then enter |
-| `c` / `x` | call / check | `1`–`5` | a third, half, three quarters, the pot, all-in |
-| `a` | all-in | `←` `→` | adjust the size, or type an amount in bb |
-| `/` | ask the coach anything | `1`–`6` | answer the coach's question (`esc` skips it, or just act) |
-| `n` | peek at your equity, the price, the best play and the live range | `space` | next hand |
-| `d` | open or close the last review in full | `PgUp` `PgDn` | scroll the coach |
-| `?` | help | `q` | leave the table |
+| `F` | fold | `R` | bet or raise the amount shown |
+| `C` | check or call | `1`–`5` | a third, half, three quarters, the pot, all-in |
+| `←` `→` | a smaller or bigger bet | `Space` | next hand |
+| `1`–`6` | answer the coach's question | `Esc` | skip the question (or just act) |
+| `N` | show or hide the numbers and the live range | `D` | open or close the last review |
+| `/` | ask the coach | `?` | help |
 
-Options:
+The coach works in one of four ways, changed at any time from the top bar:
 
-| Flag | Default | Meaning |
+| Mode | Before you act | After you act |
 | --- | --- | --- |
-| `--bot <mystery\|solid\|station\|nit\|maniac\|random>` | `mystery` | Opponent: one of the four styles chosen in secret, a sound regular, a calling station, a nit, a maniac, or a bot that ignores its cards |
-| `--coach <teach\|full\|after\|off>` | `teach` | One question before each decision and a review after; the numbers before and a review after; a review only; or nothing |
-| `--seed <n>` | time-based | Seed for cards and the bot; the same seed deals the same session |
-| `--stack <bb>` | `100` | Starting stack in big blinds, reset every hand |
-| `--hands <n>` | unlimited | Stop after this many hands |
-| `--log <file>` | `hands.jsonl` | File that finished hands are appended to |
-| `--plain` | off | Line-by-line interface; also used automatically when input is piped |
-| `--no-llm` | off | Use the engine's own words even if an API key is set |
+| Teach (default) | a question on some decisions; the numbers stay hidden unless you peek | a review |
+| Numbers | your equity, the price of a call and the best play | a review |
+| Review | nothing | a review |
+| Off | nothing | nothing |
 
 ### The coach
 
 The poker engine works out every number; the coach's job is to teach with them,
 in as few words as the point needs. After each decision you get a grade, what
-it cost, the best options side by side with yours, and the facts that decided
-it. The title bar keeps the two measures that matter: what your mistakes have
-cost so far (per 100 hands, which is far steadier than your result), and your
-score on the coach's questions by skill.
+it cost, the options side by side with yours, and the facts that decided it.
+The top bar keeps the two measures that matter: your result, and what your
+mistakes have cost so far (per 100 hands, which is far steadier than your
+result). The session panel breaks the cost down by street and by kind of
+mistake, and scores the coach's questions by skill.
 
-With `ANTHROPIC_API_KEY` set (or `ANTHROPIC_AUTH_TOKEN`), the coach is Claude
-(`claude-opus-5-5` by default; change it with `POKER_COACH_MODEL`). It receives
-the engine's facts for each decision (the hand so far, equity, pot odds, the
-bot's likely hands, the value of every option and your recurring leaks) and is
-told to use only those numbers, lead with the verdict, and cut anything that
-does not help the decision. Replies stream into the coach panel. Each
-request sends the current hand's conversation to the Anthropic API and is
-billed to your key; nothing else leaves your machine.
+With an Anthropic API key (Settings), the coach is also Claude
+(`claude-opus-5-5` by default). It receives the engine's facts for each
+decision (the hand so far, equity, pot odds, the bot's likely hands, the value
+of every option and your recurring leaks) and is told to use only those
+numbers, lead with the verdict, and cut anything that does not help the
+decision. Replies stream into the coach panel. The key is kept in your
+browser's storage and sent only to `api.anthropic.com`; each request sends the
+current hand's conversation and is billed to your key. Nothing else leaves
+your device.
 
 Values are averages over the bot's likely hands. On the river they are exact.
 Before it they add an estimate of the betting still to come: a hand ahead of
@@ -183,51 +157,35 @@ than twice the pot is priced if you choose it, but is not offered as "best".
 
 ### Leaks and drills
 
-Every finished hand is appended to `hands.jsonl`. Between sessions:
+Every finished hand is kept in the browser, with the coach's marks. "Leaks and
+drills" in the menu adds up your last 300 hands into the mistakes that cost
+most, each with the principle that fixes it, and replays the ten costliest
+decisions as practice spots: the same cards, the same action so far, and every
+option priced once you have chosen.
 
-```sh
-poker leaks            # your costliest recurring mistakes, with the principle that fixes each
-poker drill            # replay the 10 costliest past mistakes as practice spots
-poker replay           # print and verify every stored hand
-```
-
-```
-Leaks, costliest first:
-  1. checking when betting was better on the flop — 21 time(s), about 54.69bb
-     Bet your strong hands and some of your draws: checking lets worse hands
-     see cards for free and wins smaller pots.
-  2. calling when folding was better on the river — 6 time(s), about 46.59bb
-     A bet narrows the bettor's hands towards strong ones. Judge your equity
-     against what they bet with, not against any two cards.
-```
-
-With Docker, hand histories live in the `hands` volume and survive between
-runs, and the API key is passed through from your shell:
-
-```sh
-docker compose run --rm poker --seed 7
-docker compose run --rm poker leaks
-docker compose run --rm poker drill
-```
+Settings exports your hands as a file and imports them again, to keep a copy or
+move to another device. Each line holds a hand record (the seed, the cards and
+every action), which replays to the same result.
 
 ## Roadmap
 
 | Step | What | State |
 | --- | --- | --- |
-| 1 | Rules engine, hand evaluator, hand records, playable CLI | ✅ done |
+| 1 | Rules engine, hand evaluator, hand records | ✅ done |
 | 2 | A realistic opponent, and a coach that reads its range and prices every option | ✅ done |
 | 3 | Teaching: questions before each decision, an LLM coach, leak tracking and drills | ✅ done |
 | 4 | Opponent styles (station, nit, maniac), a mystery opponent to read, one-key questions and scannable reviews | ✅ done |
-| 5 | Tables of three to nine players, with positions, limpers and multiway pots | planned |
-| 6 | Opponents fitted to real players from hands you log after a game | planned |
-| 7 | Later streets played out rather than estimated; a solver baseline | planned |
+| 5 | A web front end: the table in the browser, on a laptop or a phone, online or off | ✅ done |
+| 6 | Tables of three to nine players, with positions, limpers and multiway pots | planned |
+| 7 | Opponents fitted to real players from hands you log after a game | planned |
+| 8 | Later streets played out rather than estimated; a solver baseline | planned |
 
 Ideas and help on any of these are welcome: see [Contributing](#contributing).
 
 ## Architecture
 
-The library is pure (no I/O, no clocks, no global state); the terminal client
-sits on top.
+The library is pure (no I/O, no clocks, no global state). The browser client
+compiles it to WebAssembly and sits on top.
 
 | Module | Responsibility |
 | --- | --- |
@@ -240,7 +198,15 @@ sits on top.
 | [`analysis`](src/analysis.rs) | Re-running the coach over past hands; leaks and drill spots |
 | [`session`](src/session.rs) | A session against a bot: deals, the bot's range, what it has been seen to do, score and leaks |
 | [`history`](src/history.rs) | Hand records, storage and replay verification |
-| [`app`](src/app) | The terminal client: full-screen table, plain mode and the LLM coach |
+| [`text`](src/text.rs), [`chat`](src/chat.rs) | Words for actions; the conversation with the LLM coach |
+| [`web/src`](web/src) | The table behind the page: commands in, a view out, as JSON across the WebAssembly boundary |
+| [`web/www`](web/www) | The page: plain HTML, CSS and JavaScript modules, with no build step or dependencies of its own |
+
+The page never computes poker. A worker holds the table; the page sends it
+commands (`act`, `answer`, `next`) and draws the view that comes back. What the
+engine leaves to its host is all the page does: timing, storage, keys and the
+call to Claude. A session is saved as its seed and the player's actions, and
+resumed by replaying them.
 
 A bot implements one trait. `tendencies` describes its strategy (its chances
 of folding, calling and raising with any hand), which is what lets the coach
@@ -260,9 +226,10 @@ pub trait Bot {
 ## Development
 
 ```sh
-cargo test                                   # unit tests
+cargo test                                   # unit tests: the engine and the table behind the page
 cargo clippy --all-targets -- -D warnings    # lints
-docker compose build test                    # everything CI runs, in Docker
+./web/build.sh                               # build the page into web/www
+docker compose run --rm --build test         # everything CI runs, in Docker
 ```
 
 The toolchain is pinned with [mise](https://mise.jdx.dev) (`mise install`).

@@ -14,8 +14,9 @@ body:
     attributes:
       label: How to reproduce
       description: >
-        The command you ran (ideally with `--seed`) and the actions you typed,
-        or the offending line from `hands.jsonl`.
+        What you did, with the session's seed (shown in the session report) or
+        the hand's line from an export of your hands (Settings), and your
+        browser and device.
       render: text
     validations:
       required: true
@@ -31,10 +32,8 @@ body:
     attributes:
       label: How do you run it?
       options:
+        - The published site
         - Docker
-        - cargo on Linux
-        - cargo on macOS
-        - cargo on Windows
-        - Prebuilt binary
+        - Built locally with web/build.sh
     validations:
       required: true

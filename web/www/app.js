@@ -17,6 +17,7 @@ const STORE = { save: 'poker.save', history: 'poker.history', settings: 'poker.s
 const HISTORY_KEPT = 3000;
 const DRILL_FROM = 300;
 const DRILL_SPOTS = 10;
+const STREETS = ['Preflop', 'Flop', 'Turn', 'River'];
 
 // ---- state ----------------------------------------------------------------
 
@@ -318,15 +319,18 @@ function drawDock(view) {
     if (legal.to_call > 0) {
       tiles.push(['To call', chips(legal.to_call), `into ${chips(legal.pot)}`, 'basic']);
       // The price is a question the coach may be asking: teach mode keeps it back.
-      if (view.mode !== 'teach' || shown) tiles.push(['Price', `win ${pct(legal.pot_odds)}+`, 'to break even']);
+      if (view.mode !== 'teach' || shown) tiles.push(['Price', `${pct(legal.pot_odds)}+`, 'wins to call']);
     } else {
       tiles.push(['Pot', chips(legal.pot), 'free to check', 'basic']);
     }
-    tiles.push(['Stacks', `${legal.stacks_to_pot.toFixed(1)}× pot`, 'left to bet', 'basic']);
+    tiles.push(['Stacks', `${legal.stacks_to_pot.toFixed(1)}×`, 'the pot behind', 'basic']);
     if (coached && view.spot && shown) {
       const sp = view.spot;
       tiles.push(['Equity', pct(sp.equity), `vs ${sp.against}`]);
-      if (sp.best) tiles.push(['Best play', esc(sp.best.text), esc(sp.best.ev_text.replace('-', '−')), 'wide']);
+      if (sp.best) {
+        const [, play, size] = sp.best.text.match(/^(.*?)(?: \((.*)\))?$/);
+        tiles.push(['Best play', esc(play), `${size ? `${esc(size)} · ` : ''}${minus(sp.best.ev_text)}`, 'wide']);
+      }
     }
     strip = tiles.map(([label, value, sub, cls]) =>
       `<div class="tile ${cls ?? ''}"><span class="tile-label">${label}</span><span class="tile-value">${value}</span>` +
@@ -709,7 +713,7 @@ function openNew() {
   const kinds = [{ name: 'mystery', blurb: 'One of the four below, chosen in secret. Read it from how it plays; it is named when the session ends.' },
     ...S.info.styles];
   $('new-opponents').innerHTML = kinds.map((k, i) =>
-    `<label class="choice ${i === 0 ? 'choice-wide' : ''}"><input type="radio" name="opponent" value="${k.name}" ${i === 0 ? 'checked' : ''}>` +
+    `<label class="choice ${i === 0 ? 'choice-wide' : ''}"><input type="radio" name="opponent" value="${k.name}" ${i === 0 ? 'checked autofocus' : ''}>` +
     `<span><b>${k.name[0].toUpperCase() + k.name.slice(1)}</b><small>${esc(k.blurb.replace(/^A [^:]+: /, '').replace(/^./, (c) => c.toUpperCase()))}</small></span></label>`).join('');
   const playing = S.view?.kind === 'play' && S.view.phase !== 'over' && S.view.session.hands > 0;
   $('new-note').hidden = !playing;
@@ -861,7 +865,10 @@ async function importHands(file) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line);
-      const ok = typeof entry?.rec === 'string' && Array.isArray(entry.dec) && typeof entry.sid === 'string';
+      const ok = typeof entry?.rec === 'string' && typeof entry.sid === 'string' &&
+        Number.isInteger(entry.no) && Number.isInteger(entry.mine) && Array.isArray(entry.dec) &&
+        entry.dec.every((d) => STREETS.includes(d?.street) && Number.isFinite(d.loss) &&
+          Number.isInteger(d.grade) && (d.leak == null || S.info.leaks[d.leak]));
       if (ok && !seen.has(`${entry.sid}:${entry.no}`)) {
         seen.add(`${entry.sid}:${entry.no}`);
         S.history.push(entry);
@@ -989,9 +996,10 @@ function setTab(tab) {
 }
 
 document.addEventListener('click', (event) => {
-  const el = event.target.closest('[data-act],[data-do],[data-answer],[data-toggle],[data-amount],[data-tab]');
+  const el = event.target.closest('[data-act],[data-do],[data-answer],[data-toggle],[data-amount],[data-tab],[data-close]');
   if (!el || el.disabled) return;
-  if (el.closest('#menu')) $('menu').hidePopover();
+  if ('close' in el.dataset) return el.closest('dialog').close();
+  if (el.closest('#menu')) $('menu').close();
   if (el.dataset.act) act(el.dataset.act);
   else if (el.dataset.do) doIt(el.dataset.do);
   else if (el.dataset.answer) answer(Number(el.dataset.answer));
@@ -1081,13 +1089,13 @@ $('clear').addEventListener('click', (event) => {
   newSession();
 });
 
-// Closing a dialog or the menu hands focus back to the menu button, where the
+// Closing a dialog hands focus back to the menu button, where the
 // space bar would open the menu again instead of dealing the next hand.
 const unfocus = () => requestAnimationFrame(() => {
   if (!document.querySelector('dialog[open]')) document.activeElement?.blur();
 });
 for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('close', unfocus);
-$('menu').addEventListener('toggle', (event) => { if (event.newState === 'closed') unfocus(); });
+$('menu-button').addEventListener('click', () => $('menu').showModal());
 
 // Clicking outside closes the dialogs that allow it, where the browser does not yet.
 if (!('closedBy' in HTMLDialogElement.prototype)) {

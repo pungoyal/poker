@@ -29,7 +29,7 @@
           <option value="off">Off</option>
         </select>
       </label>
-      <button type="button" class="icon-button" id="menu-button" popovertarget="menu" aria-label="Menu">
+      <button type="button" class="icon-button" id="menu-button" aria-label="Menu" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
     </div>
@@ -77,14 +77,14 @@
   </main>
 </div>
 
-<div id="menu" popover class="menu">
-  <button type="button" data-do="new">New session…</button>
+<dialog id="menu" class="menu" aria-label="Menu" closedby="any">
+  <button type="button" data-do="new" autofocus>New session…</button>
   <button type="button" data-do="drill">Leaks and drills</button>
   <button type="button" data-do="end">End session and see the report</button>
   <hr>
   <button type="button" data-do="settings">Settings</button>
   <button type="button" data-do="help">How it works and keys</button>
-</div>
+</dialog>
 
 <dialog id="dlg-new" class="dialog" aria-labelledby="new-title" closedby="any">
   <form method="dialog" id="new-form">
@@ -117,8 +117,8 @@
     </div>
     <p class="dialog-note" id="new-note" hidden>This ends the session in progress.</p>
     <div class="dialog-actions">
-      <button type="submit" value="cancel" class="btn" formnovalidate>Cancel</button>
-      <button type="submit" value="start" class="btn btn-primary" autofocus>Deal</button>
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" value="start" class="btn btn-primary">Deal</button>
     </div>
   </form>
 </dialog>

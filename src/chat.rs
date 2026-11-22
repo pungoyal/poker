@@ -47,10 +47,6 @@ and never bets.";
 
 /// What the coach is being asked to do.
 pub enum Ask {
-    /// Before the player decides: ask one guiding question.
-    Question,
-    /// The player answered the coach's question.
-    Answer(String),
     /// The player acted: review the decision.
     Review,
     /// The player asked the coach something.
@@ -62,15 +58,6 @@ pub enum Ask {
 impl Ask {
     fn task(&self) -> String {
         match self {
-            Ask::Question => "It is the player's turn. Ask one short question about the single \
-                consideration that decides this spot (the bot's range, the player's equity, the price, or \
-                what a bet would achieve). The question only; no preamble, no hints at the answer."
-                .to_string(),
-            Ask::Answer(answer) => format!(
-                "The player answers: \"{answer}\"\nOne sentence: confirm or correct it with the number \
-                 from FACTS. Then either one short question for the step still missing, or \"Decide.\" \
-                 Do not reveal the best action unless asked."
-            ),
             Ask::Review => "The player has acted (hero_action in FACTS). First the verdict with the \
                 deciding numbers (what they chose versus the best option), then the one principle that \
                 decided it. If the grade is Good, confirm in one sentence and add only an insight the \
@@ -81,7 +68,7 @@ impl Ask {
             ),
             Ask::Summary => "The session is over. FACTS hold the player's results and their costliest \
                 leaks. Three sentences at most: the leak to fix first, how to fix it in this player's \
-                spots, and 'poker drill' to practise it. Mention a strength only if FACTS show one."
+                spots, and the drill (in the menu) to practise it. Mention a strength only if FACTS show one."
                 .to_string(),
         }
     }
@@ -241,15 +228,11 @@ mod tests {
     fn conversations_alternate() {
         let mut chat = Chat::default();
         let facts = serde_json::json!({"equity_pct": 40.0});
-        let first = chat.request(
-            &Ask::Question,
-            Some(&facts),
-            &["Preflop: Bot raises.".into()],
-        );
+        let first = chat.request(&Ask::Review, Some(&facts), &["Preflop: Bot raises.".into()]);
         assert_eq!(first.len(), 1);
         assert!(first[0].text.contains("FACTS") && first[0].text.contains("Bot raises"));
-        chat.reply("What does that raise tell you?");
-        let second = chat.request(&Ask::Answer("it is strong".into()), None, &[]);
+        chat.reply("Calling was best: the raise is wide.");
+        let second = chat.request(&Ask::Free("why is it wide?".into()), None, &[]);
         assert_eq!(second.len(), 3);
         assert_eq!(second[1].role, Role::Assistant);
         // A failed reply is dropped, and a new request replaces it.

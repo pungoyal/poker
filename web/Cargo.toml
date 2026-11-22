@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-poker = { path = "..", default-features = false }
+poker = { path = ".." }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Must match the wasm-bindgen CLI that web/build.sh runs.

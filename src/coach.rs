@@ -683,7 +683,7 @@ fn times(x: f64) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Grade {
     Good,
-    /// Wrong by less than 1% of the pot.
+    /// Wrong by less than 1% of the pot (see [`Spot::graded_share`]).
     Close,
     Inaccuracy,
     Mistake,

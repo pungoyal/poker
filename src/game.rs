@@ -266,6 +266,19 @@ impl HandState {
         self.outcome
     }
 
+    /// Whether anyone has all their chips in. Stays true after a fold, since
+    /// a folded bet is not returned to the stack.
+    pub fn anyone_all_in(&self) -> bool {
+        self.stacks.contains(&0)
+    }
+
+    /// Whether both hands are face up: at a showdown, or once the hand is
+    /// over after someone went all-in, even if the other player folded.
+    pub fn hands_revealed(&self) -> bool {
+        self.outcome
+            .is_some_and(|o| o.showdown || self.anyone_all_in())
+    }
+
     /// The seat whose turn it is, or `None` once the hand is over.
     pub fn to_act(&self) -> Option<usize> {
         self.outcome.is_none().then_some(self.to_act)
@@ -553,6 +566,19 @@ mod tests {
                 net: [10_000, -10_000]
             }
         );
+    }
+
+    #[test]
+    fn hands_are_revealed_after_an_all_in_even_when_folded_to() {
+        let mut state = hand(0);
+        play(&mut state, &[RaiseTo(10_000)]);
+        assert!(!state.hands_revealed(), "nothing is shown mid-hand");
+        play(&mut state, &[Fold]);
+        assert!(state.hands_revealed());
+
+        let mut state = hand(0);
+        play(&mut state, &[RaiseTo(300), Fold]);
+        assert!(!state.hands_revealed(), "an ordinary fold stays hidden");
     }
 
     #[test]

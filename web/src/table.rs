@@ -1319,6 +1319,9 @@ impl Table {
         let bb = cfg.big_blind as f64;
         let outcome = state.outcome();
         let showdown = outcome.is_some_and(|o| o.showdown);
+        // After an all-in the bot's cards are shown even if someone folded;
+        // its hand rank is not, since that would give away undealt cards.
+        let revealed = state.hands_revealed();
         let hole = state.hole(HERO);
         let hero_turn = self.hero_to_act();
         let phase = if self.over {
@@ -1344,7 +1347,7 @@ impl Table {
                 "rank": showdown.then(|| state.showdown_rank(HERO).describe()),
             },
             "bot": {
-                "cards": showdown.then(|| cards(&state.hole(BOT))),
+                "cards": revealed.then(|| cards(&state.hole(BOT))),
                 "stack": state.stack(BOT),
                 "bet": state.street_commit(BOT),
                 "button": state.button() == BOT,
@@ -1501,7 +1504,7 @@ impl Table {
                             "grades": e.dec.iter()
                                 .map(|d| grade_key(GRADES[(d.grade as usize).min(5)]))
                                 .collect::<Vec<_>>(),
-                            "shown": went_to_showdown(rec).then(|| cards(&rec.hole[BOT])),
+                            "shown": bot_shown(rec).then(|| cards(&rec.hole[BOT])),
                         })
                     })
                     .collect();
@@ -1548,12 +1551,16 @@ impl Table {
     }
 }
 
-/// Whether the hand in `record` was shown down.
-fn went_to_showdown(record: &HandRecord) -> bool {
-    !record
-        .actions
-        .iter()
-        .any(|&(_, action)| action == Action::Fold)
+/// Whether the bot's cards were face up at the end of the hand in `record`:
+/// at a showdown, or after an all-in even if it was folded to.
+fn bot_shown(record: &HandRecord) -> bool {
+    match record.replay() {
+        Ok(state) => state.hands_revealed(),
+        Err(_) => !record
+            .actions
+            .iter()
+            .any(|&(_, action)| action == Action::Fold),
+    }
 }
 
 fn leaks_json(session: &Session, limit: usize) -> Vec<Value> {

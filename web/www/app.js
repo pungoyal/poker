@@ -403,8 +403,9 @@ function drawDock(view) {
       const sp = view.spot;
       tiles.push(['Equity', pct(sp.equity), `vs ${sp.against}`]);
       if (sp.best) {
-        const [, play, size] = sp.best.text.match(/^(.*?)(?: \((.*)\))?$/);
-        tiles.push(['Best play', esc(play), `${size ? `${esc(size)} · ` : ''}${minus(sp.best.ev_text)}`, 'wide']);
+        const [, play, size] = sp.best.text.match(/^(\S+)(?: (.*))?$/);
+        const margin = sp.best.margin_text ? `ahead by ${esc(sp.best.margin_text)}` : 'the only option';
+        tiles.push(['Best play', esc(play), `${size ? `${esc(size)} · ` : ''}${margin}`, 'wide']);
       }
     }
     strip = tiles.map(([label, value, sub, cls]) =>
@@ -504,9 +505,13 @@ function syncSlider() {
 function reviewHTML(item, open) {
   const chosen = item.rows.find((r) => r.chosen);
   const other = item.rows.find((r) => !r.chosen);
-  let line = esc(item.action) + (chosen && !item.note ? ` <b>${minus(chosen.ev_text)}</b>` : '');
+  // The cost is in the title; the line names the best play, or when you
+  // found it, how far behind the next one was.
+  let line = esc(item.action);
   if (other && chosen && !item.note) {
-    line += ` <span class="dim">· ${chosen.best ? 'next' : 'best'}: ${esc(other.name.toLowerCase())} ${minus(other.ev_text)}</span>`;
+    line += chosen.best
+      ? ` <span class="dim">· next: ${esc(other.name.toLowerCase())} ${minus(other.gap_text)}</span>`
+      : ` <span class="dim">· best: ${esc(other.name.toLowerCase())}</span>`;
   }
   const evs = item.rows.map((r) => r.ev);
   const [lo, hi] = [Math.min(0, ...evs), Math.max(0, ...evs)];
@@ -522,7 +527,7 @@ function reviewHTML(item, open) {
       `<span class="opt-name">${esc(r.name)}${tag}</span>` +
       `<span class="opt-bar" aria-hidden="true"><i style="left:${Math.min(at, zero)}%;width:${Math.abs(at - zero)}%"></i>` +
       `<u style="left:${zero}%"></u></span>` +
-      `<span class="opt-ev">${esc(r.ev_text.replace('-', '−'))}</span>${sub}</li>`;
+      `<span class="opt-ev">${r.gap_text ? esc(r.gap_text.replace('-', '−')) : ''}</span>${sub}</li>`;
   }).join('');
   if (item.note) rows = '';
   const body = `<p class="headline">${esc(item.headline)} · <b>${pct(item.equity)}</b> vs ${esc(item.against)}</p>` +

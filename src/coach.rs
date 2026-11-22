@@ -32,6 +32,31 @@ pub fn fmt_bb_signed(chips: f64, big_blind: u32) -> String {
     }
 }
 
+/// A share of the pot as the coach shows it: "2.1%" below ten percent, so
+/// small differences stay visible, and "48%" above.
+pub fn fmt_share(share: f64) -> String {
+    let x = share * 100.0;
+    // A real but tiny difference should not read as none at all.
+    if x != 0.0 && x.abs() < 0.05 {
+        return if x > 0.0 { "<0.1%" } else { "-<0.1%" }.to_string();
+    }
+    let text = if x.abs() < 10.0 {
+        let t = format!("{x:.1}");
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        format!("{x:.0}")
+    };
+    let text = if text == "-0" { "0".to_string() } else { text };
+    format!("{text}%")
+}
+
+/// Chips as a share of `pot`, e.g. "48% pot". The coach measures values and
+/// costs against the pot: the same mistake costs more chips in a bigger pot,
+/// and bet sizes and pot odds are learnt as fractions of it.
+pub fn fmt_pot(chips: f64, pot: u32) -> String {
+    format!("{} pot", fmt_share(chips / pot.max(1) as f64))
+}
+
 /// Share of the final pot a call must win to break even.
 pub fn pot_odds(pot: u32, to_call: u32) -> f64 {
     to_call as f64 / (pot + to_call) as f64
@@ -552,43 +577,113 @@ impl Spot {
         ranked
     }
 
-    /// The action in words, e.g. "betting 3bb (75% pot)".
+    /// The action in words. After the flop sizes are shares of the pot
+    /// ("betting 75% pot", "calling a 50% pot bet"); before it, where the pot
+    /// is only the blinds, multiples of the bet faced ("raising to 2.5x",
+    /// "calling a raise to 3x"), as players size them there.
     pub fn phrase(&self, action: Action) -> String {
-        let bb = |chips: u32| fmt_bb(chips as f64, self.big_blind);
         match action {
             Action::Fold => "folding".to_string(),
             Action::Check => "checking".to_string(),
-            Action::Call => format!("calling {}", bb(self.to_call)),
+            Action::Call => match self.facing() {
+                Some(bet) => format!("calling {bet}"),
+                None => "calling".to_string(),
+            },
             Action::RaiseTo(amount) => {
                 let verb = if self.opp_commit == 0 {
-                    format!("betting {}", bb(amount))
+                    "betting"
                 } else {
-                    format!("raising to {}", bb(amount))
+                    "raising"
                 };
-                if self.raise.is_some_and(|(_, max)| amount == max) {
-                    format!("{verb} all-in")
-                } else {
-                    let share =
-                        (amount - self.opp_commit) as f64 / (self.pot + self.to_call) as f64;
-                    format!("{verb} ({} pot)", percent(share))
-                }
+                format!("{verb} {}", self.size_words(amount))
             }
         }
     }
 
-    fn bb(&self, chips: f64) -> String {
-        fmt_bb(chips, self.big_blind)
+    /// A bet or raise to `amount`: "all-in"; before the flop, "to 2.5x" the
+    /// bet faced; after it, "75% pot", the share of the pot it adds once the
+    /// bet faced is called.
+    fn size_words(&self, amount: u32) -> String {
+        if self.raise.is_some_and(|(_, max)| amount == max) {
+            "all-in".to_string()
+        } else if self.street == Street::Preflop {
+            let base = self.opp_commit.max(self.big_blind);
+            format!("to {}", times(amount as f64 / base as f64))
+        } else {
+            let share = (amount - self.opp_commit) as f64 / (self.pot + self.to_call) as f64;
+            format!("{} pot", percent(share))
+        }
     }
 
-    fn signed(&self, chips: f64) -> String {
-        fmt_bb_signed(chips, self.big_blind)
+    /// The bet being faced, sized the way `size_words`
+    /// sizes the player's own: "a 75% pot bet", "a raise to 3x". `None` with
+    /// nothing to call, or before the flop when only the big blind is faced:
+    /// the blinds are not a bet anyone chose.
+    pub fn facing(&self) -> Option<String> {
+        if self.to_call == 0 {
+            return None;
+        }
+        if self.street == Street::Preflop {
+            if self.opp_commit <= self.big_blind {
+                return None;
+            }
+            let base = self.street_commit.max(self.big_blind);
+            return Some(format!(
+                "a raise to {}",
+                times(self.opp_commit as f64 / base as f64)
+            ));
+        }
+        let share = self.to_call as f64 / self.pot.saturating_sub(self.to_call).max(1) as f64;
+        let what = if self.street_commit > 0 {
+            "raise"
+        } else {
+            "bet"
+        };
+        Some(format!("a {} pot {what}", percent(share)))
     }
+
+    /// Chips as a share of the pot before acting.
+    fn share(&self, chips: f64) -> f64 {
+        chips / self.pot.max(1) as f64
+    }
+
+    /// "2.1% of the pot", for a gap between options or a cost.
+    pub fn of_pot(&self, chips: f64) -> String {
+        format!("{} of the pot", fmt_share(self.share(chips)))
+    }
+
+    /// The share of the pot a cost of `chips` is graded on: the pot, but
+    /// never less than a floor. Before the flop the pot is only the blinds,
+    /// and every small slip would look large against it; there the floor of
+    /// [`PREFLOP_GRADE_POT_BB`] keeps the grades the big-blind cut-offs gave
+    /// (under 1bb an inaccuracy, under 5bb a mistake). After it, a limped pot
+    /// is graded as if it held [`GRADE_FLOOR_BB`].
+    pub fn graded_share(&self, chips: f64) -> f64 {
+        let floor = if self.street == Street::Preflop {
+            PREFLOP_GRADE_POT_BB
+        } else {
+            GRADE_FLOOR_BB
+        };
+        chips / self.pot.max(floor * self.big_blind).max(1) as f64
+    }
+}
+
+/// The smallest pot, in big blinds, a cost after the flop is graded against.
+pub const GRADE_FLOOR_BB: u32 = 5;
+
+/// The pot, in big blinds, a cost before the flop is graded against.
+pub const PREFLOP_GRADE_POT_BB: u32 = 20;
+
+/// A multiple as players say it: "2.5x", "3x".
+fn times(x: f64) -> String {
+    let t = format!("{x:.1}");
+    format!("{}x", t.trim_end_matches('0').trim_end_matches('.'))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Grade {
     Good,
-    /// Wrong by less than a tenth of a big blind.
+    /// Wrong by less than 1% of the pot (see [`Spot::graded_share`]).
     Close,
     Inaccuracy,
     Mistake,
@@ -598,11 +693,14 @@ pub enum Grade {
 }
 
 impl Grade {
-    fn from_loss(loss_bb: f64) -> Grade {
-        match loss_bb {
-            x if x < 0.1 => Grade::Close,
-            x if x < 1.0 => Grade::Inaccuracy,
-            x if x < 5.0 => Grade::Mistake,
+    /// The grade for giving up `share` of the pot (see [`Spot::graded_share`]).
+    /// Measured against the pot, not in big blinds, so that a slip in a big
+    /// pot is not called a blunder for its size alone.
+    fn from_loss(share: f64) -> Grade {
+        match share {
+            x if x < 0.01 => Grade::Close,
+            x if x < 0.05 => Grade::Inaccuracy,
+            x if x < 0.25 => Grade::Mistake,
             _ => Grade::Blunder,
         }
     }
@@ -623,6 +721,8 @@ impl Grade {
 pub struct Feedback {
     pub grade: Grade,
     /// Estimated chips given up compared with the better option; zero if none.
+    /// Kept in chips so that losses across pots can be added up; the coach
+    /// shows it as a share of the pot.
     pub loss: f64,
     pub text: String,
 }
@@ -659,7 +759,7 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
     let grade = if loss < 1e-6 {
         Grade::Good
     } else {
-        Grade::from_loss(loss / spot.big_blind as f64)
+        Grade::from_loss(spot.graded_share(loss))
     };
 
     let mut text = vec![situation(spot)];
@@ -667,26 +767,19 @@ pub fn review(spot: &Spot, action: Action) -> Feedback {
         let runner_up = ranked.iter().find(|&&(a, _)| a != action);
         text.push(match runner_up {
             Some(&(alt, alt_ev)) => format!(
-                "{} was best ({}); next, {} ({}).",
+                "{} was best; next, {}, {} behind.",
                 capitalise(&spot.phrase(action)),
-                spot.signed(chosen),
                 spot.phrase(alt),
-                spot.signed(alt_ev),
+                spot.of_pot(chosen - alt_ev),
             ),
-            None => format!(
-                "{} was the only option ({}).",
-                capitalise(&spot.phrase(action)),
-                spot.signed(chosen)
-            ),
+            None => format!("{} was the only option.", capitalise(&spot.phrase(action))),
         });
     } else {
         text.push(format!(
-            "{} {}; {} {}: {} given up.",
+            "{} gave up {}; {} was best.",
             capitalise(&spot.phrase(action)),
-            spot.signed(chosen),
+            spot.of_pot(loss),
             spot.phrase(best),
-            spot.signed(best_ev),
-            spot.bb(loss),
         ));
     }
     text.extend(reasons(spot, action, best));
@@ -767,9 +860,8 @@ fn reasons(spot: &Spot, action: Action, best: Action) -> Vec<String> {
             ""
         };
         why.push(format!(
-            "Calling {} into {} needs {}; you have {}{draw}: {verdict}.",
-            spot.bb(spot.to_call as f64),
-            spot.bb(pot),
+            "{} needs {}; you have {}{draw}: {verdict}.",
+            capitalise(&spot.phrase(Action::Call)),
             percent(need),
             percent(equity),
         ));
@@ -908,33 +1000,35 @@ fn unpriced_bet(spot: &Spot, action: Action) -> String {
         )
     } else {
         format!(
-            "{} A bluff: risking {} to win {} needs folds {}.",
+            "{} A bluff: {} needs folds {}.",
             situation(spot),
-            spot.bb(risk),
-            spot.bb(pot),
+            spot.phrase(action),
             percent(risk / (risk + pot)),
         )
     }
 }
 
 /// The facts behind a decision, as JSON for a language model to explain.
-/// Amounts are in big blinds and chances in percent, rounded for reading.
+/// Gaps between options and costs are in percent of the pot, sizes as the phrases the
+/// coach shows, chances in percent, rounded for reading.
 /// With `action`, it includes the review of the action taken.
 pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
     use serde_json::json;
-    let bb = |chips: f64| (chips / spot.big_blind as f64 * 100.0).round() / 100.0;
     let pct = |x: f64| (x * 1000.0).round() / 10.0;
+    let of_pot = |chips: f64| pct(spot.share(chips));
     let cards = |cs: &[Card]| {
         cs.iter()
             .map(|c| c.to_string())
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let options: Vec<serde_json::Value> = spot
-        .ranked(action)
+    let ranked = spot.ranked(action);
+    let top = ranked.first().map_or(0.0, |r| r.1);
+    let options: Vec<serde_json::Value> = ranked
         .into_iter()
         .map(|(a, ev)| {
-            let mut option = json!({ "action": spot.phrase(a), "ev_bb": bb(ev) });
+            let mut option =
+                json!({ "action": spot.phrase(a), "pct_of_pot_behind_best": of_pot(top - ev) });
             if let Action::RaiseTo(amount) = a
                 && let Some(r) = spot.response(amount)
             {
@@ -952,8 +1046,7 @@ pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
         "board": cards(&spot.board),
         "hero_hand": spot.made,
         "hero_draws": spot.draws,
-        "pot_bb": bb(spot.pot as f64),
-        "to_call_bb": bb(spot.to_call as f64),
+        "hero_faces": spot.facing(),
         "equity_pct": pct(spot.equity),
         "equity_against": if spot.read.is_some() { "the opponent's likely hands given its actions" } else { "a random hand (the opponent's actions so far say nothing about its cards)" },
         "options_best_first": options,
@@ -961,7 +1054,7 @@ pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
     if let Some(c) = spot.check_response {
         facts["if_hero_checks"] = json!({
             "opponent_bets_pct": pct(c.bet),
-            "opponent_bets_to_bb": bb(c.bet_to as f64),
+            "opponent_bet_pct_of_pot": pct((c.bet_to - spot.street_commit) as f64 / spot.pot.max(1) as f64),
             "hero_equity_vs_those_bets_pct": pct(c.equity_vs_bets),
             "hero_equity_when_it_checks_behind_pct": pct(c.equity_vs_checks),
             "hero_best_reply_to_the_bet": if spot.call_after_check(&c) > 0.0 { "call" } else { "fold" },
@@ -992,7 +1085,7 @@ pub fn brief(spot: &Spot, action: Option<Action>) -> serde_json::Value {
         let feedback = review(spot, action);
         facts["hero_action"] = json!(spot.phrase(action));
         facts["grade"] = json!(feedback.grade.label());
-        facts["loss_bb"] = json!(bb(feedback.loss));
+        facts["loss_pct_of_pot"] = json!(of_pot(feedback.loss));
     }
     facts
 }
@@ -1066,14 +1159,26 @@ fn folds_text(spot: &Spot, response: &Response) -> String {
     )
 }
 
-/// "bet 6bb" or "raise to 12bb".
+/// "bet 50% pot", "raise 75% pot" or "bet all-in".
 fn bet_words(spot: &Spot, amount: u32) -> String {
-    let verb = if spot.opp_commit == 0 {
-        "bet"
-    } else {
-        "raise to"
+    let verb = if spot.opp_commit == 0 { "bet" } else { "raise" };
+    format!("{verb} {}", spot.size_words(amount))
+}
+
+/// The arithmetic of a call's price, counting the pot before the bet as 1:
+/// "call ÷ (pot + call) = 0.75 ÷ 2.5 = 30%".
+fn odds_working(spot: &Spot) -> String {
+    let before = spot.pot.saturating_sub(spot.to_call).max(1) as f64;
+    let units = |chips: u32| {
+        let t = format!("{:.2}", chips as f64 / before);
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
     };
-    format!("{verb} {}", spot.bb(amount as f64))
+    format!(
+        "with the pot before the bet as 1, call ÷ (pot + call) = {} ÷ {} = {}",
+        units(spot.to_call),
+        units(spot.pot + spot.to_call),
+        percent(spot.pot_odds())
+    )
 }
 
 /// Upper edges of the fold rates offered as answers.
@@ -1107,9 +1212,8 @@ impl Question {
                 format!("Your equity against {against}, in %?")
             }
             Question::PotOdds => format!(
-                "Calling {} into {}: what equity do you need, in %?",
-                spot.bb(spot.to_call as f64),
-                spot.bb(spot.pot as f64)
+                "{}: what equity do you need, in %?",
+                capitalise(&spot.phrase(Action::Call))
             ),
             Question::Outs => "How many cards complete your draw?".to_string(),
             Question::Folds(response) => format!(
@@ -1197,13 +1301,7 @@ impl Question {
             Question::PotOdds => {
                 let guess = parse_percent(&answer)?;
                 let need = spot.pot_odds();
-                let total = spot.pot + spot.to_call;
-                let working = format!(
-                    "call ÷ (pot + call) = {} ÷ {} = {}",
-                    spot.bb(spot.to_call as f64),
-                    spot.bb(total as f64),
-                    percent(need)
-                );
+                let working = odds_working(spot);
                 let right = (guess - need).abs() <= 0.03;
                 Ok(Feedback {
                     grade: if right {
@@ -1312,9 +1410,8 @@ impl Question {
                 }
             }
             Question::PotOdds => format!(
-                "Calling {} into {}: how often must you win?",
-                spot.bb(spot.to_call as f64),
-                spot.bb(spot.pot as f64)
+                "{}: how often must you win?",
+                capitalise(&spot.phrase(Action::Call))
             ),
             Question::Outs => "How many cards complete your draw?".to_string(),
             Question::Folds(response) => format!(
@@ -1476,13 +1573,7 @@ impl Question {
                 (grade, text)
             }
             Question::PotOdds => {
-                let total = spot.pot + spot.to_call;
-                let working = format!(
-                    "call ÷ (pot + call) = {} ÷ {} = {}",
-                    spot.bb(spot.to_call as f64),
-                    spot.bb(total as f64),
-                    percent(spot.pot_odds())
-                );
+                let working = capitalise(&odds_working(spot));
                 if correct {
                     (Grade::Good, format!("{working}."))
                 } else {
@@ -1700,12 +1791,15 @@ mod tests {
         assert_eq!(good_call.grade, Grade::Good);
         assert!(good_call.text.contains("needs 25%"), "{}", good_call.text);
 
-        // Folding 40% equity gives up 0.4 * 400 - 100 = 60 chips.
+        // Folding 40% equity gives up 0.4 * 400 - 100 = 60 chips: a fifth
+        // of the 300 pot. The 100 bet was half the 200 pot before it.
         let bad_fold = review(&spot(300, 100, 0.40), Action::Fold);
-        assert_eq!(bad_fold.grade, Grade::Inaccuracy);
+        assert_eq!(bad_fold.grade, Grade::Mistake);
         close(bad_fold.loss, 60.0, 1e-9);
         assert!(
-            bad_fold.text.contains("calling 1bb +0.6bb"),
+            bad_fold
+                .text
+                .contains("Folding gave up 20% of the pot; calling a 50% pot bet was best."),
             "{}",
             bad_fold.text
         );
@@ -1882,7 +1976,8 @@ mod tests {
         assert_eq!(odds.check(&facing, "0.25").unwrap().grade, Grade::Good);
         let wrong = odds.check(&facing, "33%").unwrap();
         assert_eq!(wrong.grade, Grade::Inaccuracy);
-        assert!(wrong.text.contains("1bb ÷ 4bb = 25%"), "{}", wrong.text);
+        assert!(wrong.text.contains("0.5 ÷ 2 = 25%"), "{}", wrong.text);
+        assert!(!wrong.text.contains("bb"), "{}", wrong.text);
         assert!(odds.check(&facing, "lots").is_err());
         assert!(odds.check(&facing, "250").is_err());
 
@@ -2006,8 +2101,8 @@ mod tests {
                 Action::RaiseTo(1_000),
             ]
         );
-        assert_eq!(spot.phrase(Action::RaiseTo(600)), "betting 6bb (50% pot)");
-        assert_eq!(spot.phrase(Action::RaiseTo(1_000)), "betting 10bb all-in");
+        assert_eq!(spot.phrase(Action::RaiseTo(600)), "betting 50% pot");
+        assert_eq!(spot.phrase(Action::RaiseTo(1_000)), "betting all-in");
     }
 
     #[test]
@@ -2019,5 +2114,55 @@ mod tests {
         assert_eq!(fmt_bb_signed(60.0, 100), "+0.6bb");
         assert_eq!(fmt_bb_signed(-60.0, 100), "-0.6bb");
         assert_eq!(fmt_bb_signed(0.0, 100), "0bb");
+        assert_eq!(fmt_pot(60.0, 300), "20% pot");
+        assert_eq!(fmt_pot(-6.3, 300), "-2.1% pot");
+        assert_eq!(fmt_pot(0.01, 300), "<0.1% pot");
+        assert_eq!(fmt_pot(0.0, 300), "0% pot");
+    }
+
+    #[test]
+    fn preflop_sizes_are_multiples_of_the_bet_faced() {
+        let preflop = |street_commit, opp_commit| Spot {
+            street: Street::Preflop,
+            board: Vec::new(),
+            street_commit,
+            opp_commit,
+            pot: street_commit + opp_commit,
+            to_call: opp_commit - street_commit,
+            raise: Some((200, 10_000)),
+            ..spot(0, 0, 0.5)
+        };
+        // The small blind opens against the big blind.
+        let open = preflop(50, 100);
+        assert_eq!(open.phrase(Action::RaiseTo(250)), "raising to 2.5x");
+        assert_eq!(open.phrase(Action::Call), "calling");
+        assert_eq!(open.phrase(Action::RaiseTo(10_000)), "raising all-in");
+        // The big blind faces that open, and three-bets it.
+        let facing = preflop(100, 250);
+        assert_eq!(facing.phrase(Action::Call), "calling a raise to 2.5x");
+        assert_eq!(facing.phrase(Action::RaiseTo(750)), "raising to 3x");
+        // A 4-bet faced after opening to 2.5x.
+        assert_eq!(
+            preflop(250, 750).phrase(Action::Call),
+            "calling a raise to 3x"
+        );
+    }
+
+    #[test]
+    fn small_pots_are_graded_against_a_floor() {
+        // Before the flop, against 20bb: 0.5bb is 33% of the blinds but an
+        // inaccuracy, 1bb a mistake, 5bb a blunder, as in big blinds.
+        let blinds = Spot {
+            street: Street::Preflop,
+            ..spot(150, 50, 0.5)
+        };
+        assert_eq!(blinds.of_pot(50.0), "33% of the pot");
+        let grade = |chips: f64| Grade::from_loss(blinds.graded_share(chips));
+        assert_eq!(grade(50.0), Grade::Inaccuracy);
+        assert_eq!(grade(100.0), Grade::Mistake);
+        assert_eq!(grade(500.0), Grade::Blunder);
+        // A limped flop is graded as if 5bb; a bigger pot against itself.
+        close(spot(200, 0, 0.5).graded_share(50.0), 0.1, 1e-9);
+        close(spot(2_000, 0, 0.5).graded_share(100.0), 0.05, 1e-9);
     }
 }

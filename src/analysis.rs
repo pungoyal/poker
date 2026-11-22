@@ -177,11 +177,16 @@ pub struct LeakLine {
 }
 
 impl LeakTally {
+    /// Counts one mistake of a known kind and cost, e.g. from a saved session.
+    pub fn record(&mut self, street: Street, leak: Leak, loss: f64) {
+        let entry = self.by_kind.entry((street, leak)).or_default();
+        entry.0 += 1;
+        entry.1 += loss;
+    }
+
     pub fn add(&mut self, spot: &Spot, action: Action, feedback: &Feedback) {
         if let Some(leak) = Leak::of(spot, action, feedback) {
-            let entry = self.by_kind.entry((spot.street, leak)).or_default();
-            entry.0 += 1;
-            entry.1 += feedback.loss;
+            self.record(spot.street, leak, feedback.loss);
         }
     }
 

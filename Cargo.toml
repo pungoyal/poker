@@ -13,11 +13,23 @@ categories = ["games", "command-line-utilities", "simulation"]
 exclude = [".github/", "Dockerfile", "compose.yaml", ".dockerignore", "mise.toml"]
 
 [dependencies]
-clap = { version = "4.6.9", features = ["derive"] }
-ratatui = "0.30.2"
+clap = { version = "4.6.9", features = ["derive"], optional = true }
+ratatui = { version = "0.30.2", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-ureq = "3.5.2"
+ureq = { version = "3.5.2", optional = true }
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:ratatui", "dep:ureq"]
+
+[[bin]]
+name = "poker"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[workspace]
+members = ["web"]
 
 [lints.rust]
 unsafe_code = "forbid"

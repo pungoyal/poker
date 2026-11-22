@@ -1,6 +1,7 @@
 //! A minimal streaming client for the Claude Messages API, over raw HTTPS
 //! (there is no official Rust SDK).
 
+pub use poker::chat::{Message, Role};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
@@ -23,18 +24,6 @@ pub struct Llm {
     model: String,
     url: String,
     agent: ureq::Agent,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    User,
-    Assistant,
-}
-
-#[derive(Clone, Debug)]
-pub struct Message {
-    pub role: Role,
-    pub text: String,
 }
 
 impl Llm {

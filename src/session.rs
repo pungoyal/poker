@@ -2,11 +2,11 @@
 //! likely hands for the coach, and keeps score. Pure state: the caller does
 //! all input, output and timing.
 
-use crate::analysis::{LeakTally, analyse_with};
+use crate::analysis::{Leak, LeakTally, analyse_with};
 use crate::bot::Bot;
 use crate::cards::{Rng, shuffled_deck};
 use crate::coach::{Feedback, Grade, Spot, review};
-use crate::game::{Action, Config, HandState, IllegalAction};
+use crate::game::{Action, Config, HandState, IllegalAction, Street};
 use crate::history::HandRecord;
 use crate::range::{Range, Strengths};
 use std::collections::HashMap;
@@ -273,7 +273,7 @@ impl Session {
     fn observe(&mut self, action: Action) {
         let facing = self.state.legal().is_some_and(|l| l.to_call > 0);
         let o = &mut self.observed;
-        if self.state.street() == crate::game::Street::Preflop {
+        if self.state.street() == Street::Preflop {
             self.hand_played |= matches!(action, Action::Call | Action::RaiseTo(_));
             self.hand_raised |= matches!(action, Action::RaiseTo(_));
             return;
@@ -347,6 +347,18 @@ impl Session {
             self.strengths = Strengths::new(self.state.board());
         }
         Ok(())
+    }
+
+    /// Counts a decision reviewed before this session object existed, so a
+    /// saved session can be resumed with its score intact: its grade, the
+    /// chips it gave up and the kind of mistake it was, if any.
+    pub fn credit(&mut self, street: Street, leak: Option<Leak>, grade: Grade, loss: f64) {
+        if let Some(leak) = leak {
+            self.tally.record(street, leak, loss);
+        }
+        *self.grades.entry(grade).or_default() += 1;
+        self.given_up += loss;
+        self.reviewed += 1;
     }
 
     /// Once the hand is over: scores it and returns its record, the first

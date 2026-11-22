@@ -41,9 +41,11 @@ Teach, as the hand calls for it: ranges (which hands the opponent can hold after
 against that range, pot odds, fold equity, value betting versus bluffing, bet sizing, position and \
 initiative. Tie each point to this hand.
 
-The opponents: \"solid\" plays a sound, balanced strategy, so each of its actions narrows its range; \
-\"random\" ignores its cards, so its actions say nothing about its hand; \"calling station\" never folds \
-and never bets.";
+When FACTS describe the opponent's style, use it; when they say the opponent is unknown, point to what it \
+has been seen to do and do not name a style.
+
+Within a hand, FACTS and the hand's actions are sent once and then only when they change: earlier messages \
+still hold, and a later FACTS block replaces the one before it.";
 
 /// What the coach is being asked to do.
 pub enum Ask {
@@ -162,39 +164,64 @@ pub fn session_facts(session: &Session) -> Value {
 #[derive(Default)]
 pub struct Chat {
     messages: Vec<Message>,
+    /// The facts and the lines of the hand the model has already been sent,
+    /// so that a later message carries only what changed.
+    facts_sent: Option<String>,
+    history_sent: Vec<String>,
 }
 
 impl Chat {
     /// Starts afresh, e.g. for a new hand.
     pub fn reset(&mut self) {
-        self.messages.clear();
+        *self = Self::default();
+    }
+
+    /// Forgets what was sent, so the next request carries everything again.
+    fn drop_pending(&mut self) {
+        if self.messages.last().is_some_and(|m| m.role == Role::User) {
+            self.messages.pop();
+            self.facts_sent = None;
+            self.history_sent.clear();
+        }
     }
 
     /// Adds the player's side of the next exchange and returns the whole
-    /// conversation to send. `facts` and `history` are included when given.
+    /// conversation to send. `facts` and `history` are included when given,
+    /// and only as far as they differ from what this conversation already holds.
     pub fn request(
         &mut self,
         ask: &Ask,
         facts: Option<&Value>,
         history: &[String],
     ) -> Vec<Message> {
+        // Keep the roles alternating even if an earlier reply was lost.
+        self.drop_pending();
         let mut text = String::new();
-        if let Some(facts) = facts {
+        let facts = facts.map(|f| f.to_string());
+        if let Some(facts) = facts.filter(|f| self.facts_sent.as_ref() != Some(f)) {
             text.push_str("FACTS:\n");
-            text.push_str(&serde_json::to_string_pretty(facts).unwrap_or_default());
+            text.push_str(&facts);
             text.push_str("\n\n");
+            self.facts_sent = Some(facts);
         }
-        if !history.is_empty() {
-            text.push_str("HAND SO FAR:\n");
-            text.push_str(&history.join("\n"));
+        // Earlier streets do not change; the street in progress grows.
+        let known = history
+            .iter()
+            .zip(&self.history_sent)
+            .take_while(|(new, sent)| new == sent)
+            .count();
+        if known < history.len() {
+            text.push_str(if known == 0 {
+                "HAND SO FAR:\n"
+            } else {
+                "HAND SINCE THEN:\n"
+            });
+            text.push_str(&history[known..].join("\n"));
             text.push_str("\n\n");
+            self.history_sent = history.to_vec();
         }
         text.push_str("TASK: ");
         text.push_str(&ask.task());
-        // Keep the roles alternating even if an earlier reply was lost.
-        if self.messages.last().is_some_and(|m| m.role == Role::User) {
-            self.messages.pop();
-        }
         self.messages.push(Message {
             role: Role::User,
             text,
@@ -214,9 +241,7 @@ impl Chat {
 
     /// Drops a request whose reply failed.
     pub fn abandon(&mut self) {
-        if self.messages.last().is_some_and(|m| m.role == Role::User) {
-            self.messages.pop();
-        }
+        self.drop_pending();
     }
 }
 
@@ -232,13 +257,33 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(first[0].text.contains("FACTS") && first[0].text.contains("Bot raises"));
         chat.reply("Calling was best: the raise is wide.");
-        let second = chat.request(&Ask::Free("why is it wide?".into()), None, &[]);
+        let second = chat.request(
+            &Ask::Free("why is it wide?".into()),
+            Some(&facts),
+            &["Preflop: Bot raises.".into()],
+        );
         assert_eq!(second.len(), 3);
         assert_eq!(second[1].role, Role::Assistant);
-        // A failed reply is dropped, and a new request replaces it.
+        // Nothing changed, so the question travels without the facts or the hand.
+        assert!(!second[2].text.contains("FACTS:") && !second[2].text.contains("HAND "));
+        chat.reply("It raises most buttons.");
+        // A street later, only the new line and the new facts are sent.
+        let later = serde_json::json!({"equity_pct": 55.0});
+        let hand = [
+            "Preflop: Bot raises.".to_string(),
+            "Flop: You check.".into(),
+        ];
+        let next = chat.request(&Ask::Review, Some(&later), &hand);
+        let sent = &next[4].text;
+        assert!(sent.contains("55.0") && sent.contains("HAND SINCE THEN:\nFlop"));
+        assert!(!sent.contains("Bot raises"));
+        chat.reply("Betting was better.");
+        chat.request(&Ask::Free("how much better?".into()), None, &hand);
+        // A failed reply is dropped, and the request after it carries everything again.
         chat.abandon();
-        let third = chat.request(&Ask::Review, Some(&facts), &[]);
-        assert_eq!(third.len(), 3);
-        assert_eq!(third[2].role, Role::User);
+        let third = chat.request(&Ask::Review, Some(&facts), &hand);
+        assert!(third[6].text.contains("FACTS") && third[6].text.contains("Bot raises"));
+        assert_eq!(third.len(), 7);
+        assert_eq!(third[6].role, Role::User);
     }
 }

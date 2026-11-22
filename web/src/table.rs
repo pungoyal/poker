@@ -7,8 +7,8 @@ use poker::bot::{Bot, STYLES, StyleBot, by_name};
 use poker::cards::{Card, Rng};
 use poker::chat::{Ask, Chat, Role, SYSTEM, facts, session_facts};
 use poker::coach::{
-    Grade, Question, Skill, Spot, describe_hand, drills, fmt_bb, fmt_bb_signed, headline, pot_odds,
-    review, standard_sizes, why,
+    Grade, Question, Skill, Spot, describe_hand, drills, fmt_bb, fmt_bb_signed, fmt_pot_signed,
+    fmt_share, headline, pot_odds, review, standard_sizes, why,
 };
 use poker::game::{Action, Config, HandState, Street};
 use poker::history::HandRecord;
@@ -226,7 +226,9 @@ fn range_grid(range: &Range, dead: &[Card]) -> Vec<f64> {
 /// the facts that decided it.
 fn review_json(review: &Review, detail: &str, run: u32) -> Value {
     let (spot, fb) = (&review.spot, &review.feedback);
-    let bb = spot.big_blind as f64;
+    // The coach measures in pots, not big blinds: values, costs and sizes
+    // are all shares of the pot in front of the player.
+    let pot = spot.pot.max(1) as f64;
     let ranked = spot.ranked(Some(review.action));
     let best = ranked.first().map(|r| r.0);
     let rows: Vec<Value> = ranked
@@ -234,8 +236,8 @@ fn review_json(review: &Review, detail: &str, run: u32) -> Value {
         .map(|&(action, ev)| {
             let mut row = json!({
                 "name": capitalise(&spot.phrase(action)),
-                "ev": ev / bb,
-                "ev_text": fmt_bb_signed(ev, spot.big_blind),
+                "ev": ev / pot,
+                "ev_text": fmt_pot_signed(ev, spot.pot),
                 "chosen": action == review.action,
                 "best": Some(action) == best,
             });
@@ -254,8 +256,8 @@ fn review_json(review: &Review, detail: &str, run: u32) -> Value {
         "detail": detail,
         "grade": grade_key(fb.grade),
         "label": fb.grade.label(),
-        "loss": fb.loss / bb,
-        "loss_text": fmt_bb(fb.loss, spot.big_blind),
+        "loss": fb.loss / pot,
+        "loss_text": format!("{} of the pot", fmt_share(fb.loss / pot)),
         "run": run,
         "street": spot.street.name(),
         "action": capitalise(&spot.phrase(review.action)),
@@ -1013,7 +1015,7 @@ impl Table {
                 let strengths = Strengths::new(d.state.board());
                 let spot = analyse_with(&d.state, bot.as_ref(), &d.range, &strengths, action);
                 let feedback = review(&spot, action);
-                if feedback.loss < 0.1 * d.state.config().big_blind as f64 {
+                if matches!(feedback.grade, Grade::Good | Grade::Close) {
                     *correct += 1;
                 }
                 Some(Review {
@@ -1409,7 +1411,7 @@ impl Table {
             let best = spot.ranked(None).first().map(|&(action, ev)| {
                 json!({
                     "text": capitalise(&spot.phrase(action)),
-                    "ev_text": fmt_bb_signed(ev, spot.big_blind),
+                    "ev_text": fmt_pot_signed(ev, spot.pot),
                 })
             });
             json!({

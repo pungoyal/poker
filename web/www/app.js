@@ -403,7 +403,7 @@ function drawDock(view) {
       const sp = view.spot;
       tiles.push(['Equity', pct(sp.equity), `vs ${sp.against}`]);
       if (sp.best) {
-        const [, play, size] = sp.best.text.match(/^(.*?)(?: \((.*)\))?$/);
+        const [, play, size] = sp.best.text.match(/^(\S+)(?: (.*))?$/);
         tiles.push(['Best play', esc(play), `${size ? `${esc(size)} · ` : ''}${minus(sp.best.ev_text)}`, 'wide']);
       }
     }

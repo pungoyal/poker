@@ -149,6 +149,12 @@ browser's storage and sent only to `api.anthropic.com`; each request sends the
 current hand's conversation and is billed to your key. Nothing else leaves
 your device.
 
+The coach measures in pots, not big blinds: sizes, the value of each option
+and the cost of a mistake are shares of the pot in front of you, and grades
+follow the cost (close under 1% of the pot, an inaccuracy under 5%, a mistake
+under 25%, a blunder beyond). Results and session totals, which add up over
+many pots, stay in big blinds.
+
 Values are averages over the bot's likely hands. On the river they are exact.
 Before it they add an estimate of the betting still to come: a hand ahead of
 what continues gains from later streets, a hand behind pays on them, and before

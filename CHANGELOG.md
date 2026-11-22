@@ -43,6 +43,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The coach measures against the pot, not in big blinds. Bets and raises
+  read as a share of the pot ("raising 50% pot"), a call names the size of
+  the bet it faces ("calling a 75% pot bet"), and the value of each option
+  and the cost of a mistake are shares of the pot ("+93% pot", "2.1% of the
+  pot given up"); pot-odds questions work in pots too. Grades follow the
+  same measure: close under 1% of the pot, an inaccuracy under 5%, a mistake
+  under 25%, a blunder beyond. Claude is told to speak the same way. Hand
+  results and session totals stay in big blinds, since they add up across
+  pots of different sizes.
 - Requests to Claude are smaller: within a hand the facts and the hand's
   actions are sent once and then only when they change, the facts are sent
   compact, and the conversation so far is cached for follow-ups. The coach

@@ -1262,7 +1262,11 @@ impl Table {
             ),
             other => return Err(format!("unknown request '{other}'")),
         };
-        let history = self.state().map(|s| narrate(s, HERO)).unwrap_or_default();
+        // The summary is about the session, not the hand on the table.
+        let history = match kind {
+            "summary" => Vec::new(),
+            _ => self.state().map(|s| narrate(s, HERO)).unwrap_or_default(),
+        };
         let messages: Vec<Value> = self
             .chat
             .request(&ask, facts.as_ref(), &history)

@@ -49,6 +49,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- After a hand with an all-in, the bot's cards are shown even when someone
+  folded to the shove, on the table, in the result line and in the list of
+  earlier hands.
 - The Docker image serves the web app on port 8080 instead of running the
   terminal client.
 

@@ -453,6 +453,7 @@ function drawDock(view) {
         : o.winner === 'hero' ? `You win ${bb(net)}.` : `You lose ${bb(-net)}.`;
       if (o.showdown) text += ` You show ${esc(t.hero.rank)}; it shows ${esc(t.bot.rank)}.`;
       else text += o.winner === 'hero' ? ' The opponent folded.' : ' You folded.';
+      if (!o.showdown && t.bot.cards) text += ` It had ${miniCards(t.bot.cards)}.`;
       strip = `<div class="note ${sign(net)}">${text}</div>`;
       actions = `<button type="button" class="act act-next" data-do="next"><span class="act-main">Next hand</span>${key('Space')}</button>`;
     }

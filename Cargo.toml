@@ -3,21 +3,22 @@ name = "poker"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Heads-up No-Limit Hold'em trainer for the terminal: a deterministic rules engine, hand evaluator and replayable hand histories"
+description = "Heads-up No-Limit Hold'em trainer: a deterministic rules engine, opponents with real leaks and a coach that prices every decision"
 authors = ["Puneet Goyal"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/pungoyal/poker"
 readme = "README.md"
-keywords = ["poker", "holdem", "game", "cli", "solver"]
-categories = ["games", "command-line-utilities", "simulation"]
-exclude = [".github/", "Dockerfile", "compose.yaml", ".dockerignore", "mise.toml"]
+keywords = ["poker", "holdem", "game", "trainer", "wasm"]
+categories = ["games", "simulation", "wasm"]
+exclude = [".github/", "Dockerfile", "compose.yaml", ".dockerignore", "mise.toml", "web/"]
 
 [dependencies]
-clap = { version = "4.6.9", features = ["derive"] }
-ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-ureq = "3.5.2"
+
+[workspace]
+members = ["web"]
+default-members = [".", "web"]
 
 [lints.rust]
 unsafe_code = "forbid"

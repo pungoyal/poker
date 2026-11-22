@@ -8,28 +8,29 @@ FROM rust:${RUST_VERSION}-slim-${DEBIAN_RELEASE} AS source
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY web ./web
 
 # Formatting, lints and tests: docker build --target test .
 FROM source AS test
 RUN rustup component add rustfmt clippy
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo fmt --check \
+    cargo fmt --all --check \
     && cargo clippy --locked --release --all-targets -- -D warnings \
     && cargo test --locked --release
 
+# The engine compiled to WebAssembly, next to the page's static files.
 FROM source AS build
+# Must match the wasm-bindgen version in web/Cargo.toml.
+ARG WASM_BINDGEN_VERSION=0.2.130
+RUN rustup target add wasm32-unknown-unknown
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install wasm-bindgen-cli --version ${WASM_BINDGEN_VERSION} --locked
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --locked --release \
-    && cp target/release/poker /usr/local/bin/poker
+    ./web/build.sh && cp -r web/www /site
 
-FROM debian:${DEBIAN_RELEASE}-slim AS runtime
-RUN useradd --create-home --uid 10001 poker \
-    && install -d -o poker -g poker /data
-COPY --from=build /usr/local/bin/poker /usr/local/bin/poker
-USER poker
-# Hand histories are written here; mount a volume to keep them.
-WORKDIR /data
-VOLUME /data
-ENTRYPOINT ["poker"]
+# A static site: nothing of the game runs on the server.
+FROM nginxinc/nginx-unprivileged:alpine AS runtime
+COPY --from=build /site /usr/share/nginx/html
+EXPOSE 8080

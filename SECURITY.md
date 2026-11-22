@@ -15,13 +15,16 @@ Include the version or commit, steps to reproduce and the impact you expect.
 You can expect an acknowledgement within a few days. Once a fix is ready we will
 publish an advisory and credit you, unless you prefer to stay anonymous.
 
-Relevant areas include parsing of hand-history files (`replay`, `leaks`,
-`drill`), the LLM coach's handling of your API key and of the network responses
-it streams, the Docker images, and the CI and release workflows.
+Relevant areas include the page's handling of stored and imported hands, the
+LLM coach's handling of your API key and of the network responses it streams,
+the Docker image, and the CI and deploy workflows.
 
 ## Your API key
 
-The LLM coach reads `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) from the
-environment and sends it only to the Anthropic API (or to `ANTHROPIC_BASE_URL`
-if you set one). It is never written to disk or to hand histories. Each
-request carries the current hand's cards, actions and coaching conversation.
+The LLM coach is optional. The key you enter in Settings is kept in your
+browser's local storage for the site and sent only to `api.anthropic.com`,
+straight from the page; there is no server in between. Anyone with access to
+your browser profile can read it, so use a key you can revoke, and clear it in
+Settings on a shared device. It is never written to hand histories or exports.
+Each request carries the current hand's cards, actions and coaching
+conversation.

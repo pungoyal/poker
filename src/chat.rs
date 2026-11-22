@@ -1,8 +1,24 @@
 //! The conversation with the language-model coach. The poker engine works out
 //! every number; the model turns those facts into teaching.
 
-use super::llm::{Message, Role};
-use serde_json::Value;
+use crate::coach::{Spot, brief, fmt_bb};
+use crate::game::Action;
+use crate::session::Session;
+use serde_json::{Value, json};
+
+/// Who said a message in the conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+/// One message of the conversation with the language model.
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub role: Role,
+    pub text: String,
+}
 
 pub const SYSTEM: &str = "\
 You are the coach inside a heads-up No-Limit Hold'em trainer. The player is learning to make decisions \
@@ -31,10 +47,6 @@ and never bets.";
 
 /// What the coach is being asked to do.
 pub enum Ask {
-    /// Before the player decides: ask one guiding question.
-    Question,
-    /// The player answered the coach's question.
-    Answer(String),
     /// The player acted: review the decision.
     Review,
     /// The player asked the coach something.
@@ -46,15 +58,6 @@ pub enum Ask {
 impl Ask {
     fn task(&self) -> String {
         match self {
-            Ask::Question => "It is the player's turn. Ask one short question about the single \
-                consideration that decides this spot (the bot's range, the player's equity, the price, or \
-                what a bet would achieve). The question only; no preamble, no hints at the answer."
-                .to_string(),
-            Ask::Answer(answer) => format!(
-                "The player answers: \"{answer}\"\nOne sentence: confirm or correct it with the number \
-                 from FACTS. Then either one short question for the step still missing, or \"Decide.\" \
-                 Do not reveal the best action unless asked."
-            ),
             Ask::Review => "The player has acted (hero_action in FACTS). First the verdict with the \
                 deciding numbers (what they chose versus the best option), then the one principle that \
                 decided it. If the grade is Good, confirm in one sentence and add only an insight the \
@@ -65,10 +68,94 @@ impl Ask {
             ),
             Ask::Summary => "The session is over. FACTS hold the player's results and their costliest \
                 leaks. Three sentences at most: the leak to fix first, how to fix it in this player's \
-                spots, and 'poker drill' to practise it. Mention a strength only if FACTS show one."
+                spots, and the drill (in the menu) to practise it. Mention a strength only if FACTS show one."
                 .to_string(),
         }
     }
+}
+
+/// The facts the language-model coach works from: the spot, and the
+/// player's session so far.
+pub fn facts(spot: &Spot, action: Option<Action>, session: Option<&Session>) -> Value {
+    let mut facts = brief(spot, action);
+    if let Some(session) = session {
+        let big_blind = session.config().big_blind;
+        let leaks: Vec<Value> = session
+            .tally()
+            .lines()
+            .iter()
+            .take(2)
+            .map(|l| {
+                json!(format!(
+                    "{} on the {} ({} times)",
+                    l.leak.label(),
+                    l.street.name().to_lowercase(),
+                    l.count
+                ))
+            })
+            .collect();
+        let seen = session.observed();
+        let pct = |x: Option<f64>| x.map(|x| (x * 100.0).round());
+        facts["opponent_seen_so_far"] = json!({
+            "hands": seen.hands,
+            "plays_pct_of_hands": pct(seen.plays()),
+            "raises_preflop_pct_of_hands": pct(seen.raises()),
+            "folds_to_postflop_bets_pct": pct(seen.folds_to_bets()),
+            "postflop_bets_and_raises_pct_of_its_actions": pct(seen.aggression()),
+        });
+        if session.opponent_hidden() {
+            // The player has to read the opponent: do not hand them its name.
+            facts["opponent"] = json!(
+                "unknown: the player is working out its style from how it plays; do not name the style, point to what it has been seen to do"
+            );
+            if let Some(map) = facts.as_object_mut() {
+                map.remove("opponent_style");
+                map.remove("how_to_beat_it");
+            }
+        }
+        facts["session"] = json!({
+            "hands_played": session.finished(),
+            "result_bb": session.total() as f64 / big_blind as f64,
+            "recurring_leaks": leaks,
+        });
+    }
+    facts
+}
+
+/// The facts for an end-of-session summary.
+pub fn session_facts(session: &Session) -> Value {
+    let big_blind = session.config().big_blind;
+    let to_bb = |chips: f64| (chips / big_blind as f64 * 100.0).round() / 100.0;
+    let grades: Vec<Value> = session
+        .grades()
+        .iter()
+        .map(|(grade, count)| json!({ "grade": grade.label(), "count": count }))
+        .collect();
+    let leaks: Vec<Value> = session
+        .tally()
+        .lines()
+        .iter()
+        .take(4)
+        .map(|l| {
+            json!({
+                "leak": l.leak.label(),
+                "street": l.street.name(),
+                "times": l.count,
+                "cost_bb": to_bb(l.loss),
+                "principle": l.leak.tip(),
+            })
+        })
+        .collect();
+    json!({
+        "opponent": session.bot_name(),
+        "hands_played": session.finished(),
+        "result_bb": to_bb(session.total() as f64),
+        "estimated_bb_given_up": to_bb(session.given_up()),
+        "grades": grades,
+        "leaks_costliest_first": leaks,
+        "result_note": format!("Results over {} hands swing a lot with the cards; the bb given up is the better measure of play.", session.finished()),
+        "given_up_text": fmt_bb(session.given_up(), big_blind),
+    })
 }
 
 /// The conversation for the current hand.
@@ -141,15 +228,11 @@ mod tests {
     fn conversations_alternate() {
         let mut chat = Chat::default();
         let facts = serde_json::json!({"equity_pct": 40.0});
-        let first = chat.request(
-            &Ask::Question,
-            Some(&facts),
-            &["Preflop: Bot raises.".into()],
-        );
+        let first = chat.request(&Ask::Review, Some(&facts), &["Preflop: Bot raises.".into()]);
         assert_eq!(first.len(), 1);
         assert!(first[0].text.contains("FACTS") && first[0].text.contains("Bot raises"));
-        chat.reply("What does that raise tell you?");
-        let second = chat.request(&Ask::Answer("it is strong".into()), None, &[]);
+        chat.reply("Calling was best: the raise is wide.");
+        let second = chat.request(&Ask::Free("why is it wide?".into()), None, &[]);
         assert_eq!(second.len(), 3);
         assert_eq!(second[1].role, Role::Assistant);
         // A failed reply is dropped, and a new request replaces it.

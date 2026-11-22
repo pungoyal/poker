@@ -1,15 +1,15 @@
 //! Words for actions and hands, shared by every front end.
 
-use poker::cards::Card;
-use poker::coach::fmt_bb;
-use poker::game::{Action, HandState, Legal, Street};
+use crate::cards::Card;
+use crate::coach::fmt_bb;
+use crate::game::{Action, HandState, Legal, Street};
 
 pub fn bb(chips: u32, big_blind: u32) -> String {
     fmt_bb(chips as f64, big_blind)
 }
 
 pub fn bb_signed(chips: i64, big_blind: u32) -> String {
-    poker::coach::fmt_bb_signed(chips as f64, big_blind)
+    crate::coach::fmt_bb_signed(chips as f64, big_blind)
 }
 
 pub fn cards(cards: &[Card]) -> String {
@@ -87,8 +87,8 @@ pub fn position(state: &HandState, seat: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use poker::cards::parse_cards;
-    use poker::game::Config;
+    use crate::cards::parse_cards;
+    use crate::game::Config;
 
     #[test]
     fn narrates_by_street() {

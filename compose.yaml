@@ -1,23 +1,13 @@
-# Play:    docker compose run --rm poker
-# Replay:  docker compose run --rm poker replay
-# Leaks:   docker compose run --rm poker leaks
-# Drill:   docker compose run --rm poker drill
-# Test:    docker compose run --rm --build test
+# Play:  docker compose up --build     then open http://localhost:8080
+# Test:  docker compose run --rm --build test
 services:
   poker:
     build:
       context: .
       target: runtime
     image: poker
-    stdin_open: true
-    tty: true
-    # Passed through from your shell for the LLM coach, if set.
-    environment:
-      - ANTHROPIC_API_KEY
-      - ANTHROPIC_AUTH_TOKEN
-      - POKER_COACH_MODEL
-    volumes:
-      - hands:/data
+    ports:
+      - "8080:8080"
 
   test:
     build:
@@ -26,6 +16,3 @@ services:
     image: poker-test
     profiles: [test]
     entrypoint: ["true"]
-
-volumes:
-  hands:

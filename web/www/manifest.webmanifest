@@ -1,0 +1,12 @@
+{
+  "name": "poker · heads-up trainer",
+  "short_name": "poker",
+  "description": "A heads-up No-Limit Hold'em trainer with a coach that prices every decision.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d1014",
+  "theme_color": "#0d1014",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

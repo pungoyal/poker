@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1014">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="A heads-up No-Limit Hold'em trainer: play the kinds of player you meet at a home game, with a coach that prices every decision.">
+  <title>poker · heads-up trainer</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="app" id="app" data-tab="coach" data-phase="loading">
+
+  <header class="bar">
+    <div class="brand" aria-label="poker"><span aria-hidden="true">♠</span> poker</div>
+    <div class="bar-stats" id="bar-stats" aria-live="off"></div>
+    <div class="bar-actions">
+      <label class="mode">
+        <span class="mode-label">Coach</span>
+        <select id="mode" aria-label="How the coach helps">
+          <option value="teach">Teach</option>
+          <option value="full">Numbers</option>
+          <option value="after">Review</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <button type="button" class="icon-button" id="menu-button" aria-label="Menu" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="felt-wrap" aria-label="Table">
+      <div class="felt" id="felt">
+        <div class="loading" id="loading">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Shuffling up…</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="dock" id="dock" aria-label="Your move"></section>
+
+    <nav class="tabs" role="tablist" aria-label="Panels">
+      <button type="button" role="tab" data-tab="coach" aria-selected="true">Coach<span class="tab-dot" id="coach-dot" hidden></span></button>
+      <button type="button" role="tab" data-tab="read" aria-selected="false">Opponent</button>
+      <button type="button" role="tab" data-tab="session" aria-selected="false">Session</button>
+    </nav>
+
+    <aside class="panel panel-coach" data-panel="coach" aria-label="Coach">
+      <h2 class="panel-title">Coach</h2>
+      <div class="feed" id="feed" tabindex="0" role="log" aria-label="What the coach has said"></div>
+      <form class="ask" id="ask" autocomplete="off">
+        <input id="ask-input" type="text" name="question" placeholder="Ask the coach…" aria-label="Ask the coach a question" enterkeyhint="send">
+        <button type="submit" class="icon-button" aria-label="Send">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+    </aside>
+
+    <aside class="panel panel-read" data-panel="read" aria-label="Opponent">
+      <section class="box" id="range"></section>
+      <section class="box" id="opponent"></section>
+    </aside>
+
+    <aside class="panel panel-session" data-panel="session" aria-label="Session">
+      <section class="box" id="hand-log"></section>
+      <section class="box" id="session"></section>
+      <section class="box" id="past"></section>
+    </aside>
+  </main>
+</div>
+
+<dialog id="menu" class="menu" aria-label="Menu" closedby="any">
+  <button type="button" data-do="new" autofocus>New session…</button>
+  <button type="button" data-do="drill">Leaks and drills</button>
+  <button type="button" data-do="end">End session and see the report</button>
+  <hr>
+  <button type="button" data-do="settings">Settings</button>
+  <button type="button" data-do="help">How it works and keys</button>
+</dialog>
+
+<dialog id="dlg-new" class="dialog" aria-labelledby="new-title" closedby="any">
+  <form method="dialog" id="new-form">
+    <h2 id="new-title">New session</h2>
+    <fieldset>
+      <legend>Opponent</legend>
+      <div class="choices" id="new-opponents"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Coach</legend>
+      <div class="choices choices-2">
+        <label class="choice"><input type="radio" name="mode" value="teach" checked><span><b>Teach</b><small>A question before some decisions, a review after each.</small></span></label>
+        <label class="choice"><input type="radio" name="mode" value="full"><span><b>Numbers</b><small>Your equity and the best play before you act, and reviews.</small></span></label>
+        <label class="choice"><input type="radio" name="mode" value="after"><span><b>Review</b><small>Play in peace; each decision is priced afterwards.</small></span></label>
+        <label class="choice"><input type="radio" name="mode" value="off"><span><b>Off</b><small>Just the cards.</small></span></label>
+      </div>
+    </fieldset>
+    <div class="field-row">
+      <label class="field">Stacks
+        <select name="stack">
+          <option value="25">25bb</option>
+          <option value="50">50bb</option>
+          <option value="100" selected>100bb</option>
+          <option value="200">200bb</option>
+        </select>
+      </label>
+      <label class="field">Seed <small>(optional: the same seed deals the same cards)</small>
+        <input type="text" name="seed" inputmode="numeric" pattern="[0-9]*" placeholder="random">
+      </label>
+    </div>
+    <p class="dialog-note" id="new-note" hidden>This ends the session in progress.</p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" value="start" class="btn btn-primary">Deal</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-elsewhere" class="dialog" aria-labelledby="elsewhere-title">
+  <form method="dialog">
+    <h2 id="elsewhere-title">Playing in another tab</h2>
+    <p>Your session was picked up in another tab or window, so this one has stopped to keep the two from overwriting each other.</p>
+    <div class="dialog-actions">
+      <button type="submit" value="here" class="btn btn-primary" autofocus>Play here instead</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-report" class="dialog" aria-labelledby="report-title">
+  <form method="dialog">
+    <h2 id="report-title">Session report</h2>
+    <div id="report-body"></div>
+    <div class="dialog-actions" id="report-actions"></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-drill" class="dialog" aria-labelledby="drill-title" closedby="any">
+  <form method="dialog">
+    <h2 id="drill-title">Leaks and drills</h2>
+    <div id="drill-body"></div>
+    <div class="dialog-actions">
+      <button type="submit" value="cancel" class="btn">Close</button>
+      <button type="submit" value="drill" class="btn btn-primary" id="drill-start" autofocus>Drill the costliest</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings" class="dialog" aria-labelledby="settings-title" closedby="any">
+  <form method="dialog" id="settings-form">
+    <h2 id="settings-title">Settings</h2>
+    <fieldset>
+      <legend>Table</legend>
+      <label class="check"><input type="checkbox" name="fourColour"><span>Four-colour deck <small>green clubs, blue diamonds</small></span></label>
+      <label class="check"><input type="checkbox" name="fast"><span>Fast opponent <small>no pause before it acts</small></span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Claude as your coach</legend>
+      <p class="dialog-note">With an Anthropic API key, Claude explains each full review in its own words and answers your questions, working only from the engine's numbers. The key stays in this browser and is sent only to api.anthropic.com.</p>
+      <label class="field">API key
+        <input type="password" name="apiKey" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">Model
+        <input type="text" name="model" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false">
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Your hands</legend>
+      <p class="dialog-note" id="data-note"></p>
+      <div class="field-row">
+        <button type="button" class="btn" id="export">Export</button>
+        <button type="button" class="btn" id="import">Import…</button>
+        <button type="button" class="btn btn-danger" id="clear">Delete all</button>
+        <input type="file" id="import-file" accept=".jsonl,.json,.txt" hidden>
+      </div>
+    </fieldset>
+    <div class="dialog-actions">
+      <button type="submit" value="save" class="btn btn-primary" autofocus>Done</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-help" class="dialog" aria-labelledby="help-title" closedby="any">
+  <form method="dialog">
+    <h2 id="help-title">How it works</h2>
+    <p>Heads-up No-Limit Hold'em against one of four kinds of player. Stacks reset every hand, so every hand is a fresh decision. The coach reads the opponent's likely hands from what it does and prices each of your options against them: your <b>result</b> swings with the cards, the <b>chips given up to mistakes</b> measure how you played.</p>
+    <table class="keys">
+      <tr><th><kbd>F</kbd></th><td>Fold</td><th><kbd>C</kbd></th><td>Check or call</td></tr>
+      <tr><th><kbd>R</kbd></th><td>Bet or raise the amount shown</td><th><kbd>1</kbd>–<kbd>5</kbd></th><td>⅓, ½, ¾, pot, all-in</td></tr>
+      <tr><th><kbd>←</kbd> <kbd>→</kbd></th><td>Smaller or bigger bet</td><th><kbd>Space</kbd></th><td>Next hand</td></tr>
+      <tr><th><kbd>1</kbd>–<kbd>6</kbd></th><td>Answer the coach's question</td><th><kbd>Esc</kbd></th><td>Skip the question</td></tr>
+      <tr><th><kbd>N</kbd></th><td>Show or hide the numbers</td><th><kbd>D</kbd></th><td>Open the last review</td></tr>
+      <tr><th><kbd>/</kbd></th><td>Ask the coach</td><th><kbd>?</kbd></th><td>This page</td></tr>
+    </table>
+    <div class="dialog-actions">
+      <button type="submit" class="btn btn-primary" autofocus>Got it</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<noscript><p style="padding:2rem;color:#fff">The table needs JavaScript and WebAssembly.</p></noscript>
+</body>
+</html>

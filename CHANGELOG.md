@@ -41,6 +41,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the browser.
 - Offline play once loaded, and a manifest for adding it to a home screen.
 
+### Changed
+
+- Requests to Claude are smaller: within a hand the facts and the hand's
+  actions are sent once and then only when they change, the facts are sent
+  compact, and the conversation so far is cached for follow-ups. The coach
+  no longer describes opponents that were removed.
+
 ### Removed
 
 - The terminal client: the full-screen table, the plain line mode and the

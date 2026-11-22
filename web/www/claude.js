@@ -37,8 +37,11 @@ export async function askClaude({ key, model, system, messages }, onText) {
         model: model || DEFAULT_MODEL,
         max_tokens: 4000,
         stream: true,
-        // The system prompt never changes, so it is cached across requests.
-        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        // Caches the conversation so far, so a follow-up in the same hand
+        // re-reads it at a fraction of the price. (The system prompt alone is
+        // under the smallest size that can be cached.)
+        cache_control: { type: 'ephemeral' },
+        system,
         messages,
         // Coaching replies are short; low effort keeps them quick at the table.
         output_config: { effort: 'low' },
@@ -51,7 +54,7 @@ export async function askClaude({ key, model, system, messages }, onText) {
   if (!response.ok) throw new Error(apiError(response.status, await response.text()));
 
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let [text, buffer, stop] = ['', '', null];
+  let [text, buffer, stop, usage] = ['', '', null, {}];
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -69,13 +72,18 @@ export async function askClaude({ key, model, system, messages }, onText) {
       if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
         text += event.delta.text ?? '';
         onText(text);
+      } else if (event.type === 'message_start') {
+        usage = { ...event.message?.usage };
       } else if (event.type === 'message_delta') {
         stop = event.delta?.stop_reason ?? stop;
+        usage = { ...usage, ...event.usage };
       } else if (event.type === 'error') {
         throw new Error(event.error?.message ?? 'the stream failed');
       }
     }
   }
+  // What the request cost, for anyone checking with the console open.
+  console.debug('claude usage', usage);
   if (stop === 'refusal' && !text.trim()) throw new Error('Claude declined to answer');
   if (!text.trim()) throw new Error('Claude sent an empty reply');
   return text.trim();

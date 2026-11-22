@@ -27,8 +27,13 @@ jobs:
         run: rustup toolchain install 1.100.0 --profile minimal --target wasm32-unknown-unknown && rustup default 1.100.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install wasm-bindgen
-        # Keep in sync with web/Cargo.toml.
-        run: command -v wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.130 --locked
+        # The version must match web/Cargo.toml. A cached binary of another
+        # version is replaced rather than used.
+        run: |
+          version=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' web/Cargo.toml)
+          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $version" ]; then
+            cargo install wasm-bindgen-cli --version "$version" --locked --force
+          fi
       - run: ./web/build.sh
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

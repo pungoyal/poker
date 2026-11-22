@@ -2,6 +2,7 @@
 // to its host: timing, storage, keys and the call to the language model.
 
 import { askClaude } from './claude.js';
+import * as hands from './hands.js';
 
 const $ = (id) => document.getElementById(id);
 const app = $('app');
@@ -13,6 +14,8 @@ const GRADE_NAMES = [
   ['good', 'good', 'good'], ['close', 'close', 'close'], ['inaccuracy', 'inaccurate', 'inaccurate'],
   ['mistake', 'mistake', 'mistakes'], ['blunder', 'blunder', 'blunders'],
 ];
+// Finished hands live in IndexedDB (hands.js); poker.history is where older
+// versions kept them in localStorage, read once to move them over.
 const STORE = { save: 'poker.save', history: 'poker.history', settings: 'poker.settings' };
 const HISTORY_KEPT = 3000;
 const DRILL_FROM = 300;
@@ -25,7 +28,8 @@ const S = {
   view: null,
   info: null,
   settings: { fourColour: true, fast: false, apiKey: '', model: '', ...load(STORE.settings, {}) },
-  history: load(STORE.history, []),
+  history: [],        // finished hands, oldest first, as stored by hands.js
+  elsewhere: false,   // another tab has taken over the session
   showNumbers: false,
   bet: null,          // the raise amount chosen, in chips
   betFor: '',         // the decision it was chosen for
@@ -83,19 +87,31 @@ const miniCards = (codes) => codes.map((c) =>
 
 // ---- the engine -----------------------------------------------------------
 
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 const waiting = new Map();
+let worker = null;
 let sent = 0;
-let ready;
-const engineReady = new Promise((resolve, reject) => { ready = { resolve, reject }; });
+let engineReady;
+let crashes = 0;
 
-worker.onmessage = ({ data }) => {
-  if (data.ready) return ready.resolve();
-  if (data.fatal) return ready.reject(new Error(data.fatal));
-  waiting.get(data.id)?.(data.reply);
-  waiting.delete(data.id);
-};
-worker.onerror = (event) => ready.reject(new Error(event.message || 'the engine failed to load'));
+/** Starts the engine in a fresh worker. Commands still waiting on the old
+ *  one are answered with an error. */
+function startEngine() {
+  worker?.terminate();
+  for (const resolve of waiting.values()) resolve({ error: 'the engine was restarted', dropped: true });
+  waiting.clear();
+  const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker = w;
+  engineReady = new Promise((resolve, reject) => {
+    w.onmessage = ({ data }) => {
+      if (data.ready) return resolve();
+      if (data.fatal) return reject(new Error(data.fatal));
+      const reply = data.crashed ? { ...data.reply, crashed: true } : data.reply;
+      waiting.get(data.id)?.(reply);
+      waiting.delete(data.id);
+    };
+    w.onerror = (event) => reject(new Error(event.message || 'the engine failed to load'));
+  });
+}
 
 function send(cmd) {
   return new Promise((resolve) => {
@@ -104,25 +120,84 @@ function send(cmd) {
   });
 }
 
+/** After the engine panicked, which leaves it unable to run anything more:
+ *  a new one, back at the last save. A second crash in a row gives up on
+ *  the save, a third on the table. */
+async function restartEngine() {
+  crashes++;
+  clearTimeout(S.botTimer);
+  startEngine();
+  try {
+    await engineReady;
+  } catch (error) {
+    toast(`The table could not be set up again (${error.message}). Reload the page.`);
+    return;
+  }
+  if (crashes > 2) {
+    toast('The table keeps failing. Reload the page to try again.');
+    return;
+  }
+  if (crashes > 1) {
+    store(STORE.save, null);
+    toast('The table failed again on your saved session, so a new one has started.');
+  } else {
+    toast('The table hit an error and was set up again from your last save.');
+  }
+  await resume();
+}
+
 /** Runs a command and draws what comes back. */
 async function run(cmd, { quiet = false } = {}) {
+  if (S.elsewhere) return { error: 'This session is open in another tab.' };
   S.busy++;
   app.classList.add('busy');
   try {
     const reply = await send(cmd);
-    if (reply.error && !quiet) toast(reply.error);
+    if (reply.crashed) {
+      await restartEngine();
+      return reply;
+    }
+    if (!reply.dropped) crashes = 0;
+    if (reply.error && !quiet && !reply.dropped) toast(reply.error);
     if (reply.entry) {
       S.history.push(reply.entry);
-      if (S.history.length > HISTORY_KEPT) S.history.splice(0, S.history.length - HISTORY_KEPT);
-      store(STORE.history, S.history);
+      S.history.splice(0, Math.max(0, S.history.length - HISTORY_KEPT));
+      // The hand is stored before the save that counts it, so a save never
+      // claims a hand that is not there.
+      try {
+        await hands.add([reply.entry], HISTORY_KEPT);
+        tabs?.postMessage({ hands: true });
+      } catch {
+        toast('This browser is not letting the page keep finished hands.');
+      }
     }
-    if ('save' in reply) store(STORE.save, reply.save);
+    if ('save' in reply) {
+      store(STORE.save, reply.save);
+      if (reply.save) tabs?.postMessage({ save: true });
+    }
     if (reply.view) await show(reply.view);
     return reply;
   } finally {
     S.busy--;
     app.classList.toggle('busy', S.busy > 0);
   }
+}
+
+// ---- other tabs -----------------------------------------------------------
+
+// Only one tab can play the saved session: when another saves it, this one
+// steps aside instead of overwriting it with a stale copy.
+const tabs = 'BroadcastChannel' in self ? new BroadcastChannel('poker') : null;
+if (tabs) {
+  tabs.onmessage = async ({ data }) => {
+    if (data.hands) S.history = await hands.all();
+    if (data.save && !S.elsewhere) {
+      S.elsewhere = true;
+      clearTimeout(S.botTimer);
+      for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+      $('dlg-elsewhere').showModal();
+    }
+  };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -830,10 +905,13 @@ async function startDrill() {
 async function resume() {
   const save = load(STORE.save, null);
   if (save) {
-    const hands = S.history.filter((e) => e.sid === save.sid).slice(-save.hands_done);
-    const reply = await run({ cmd: 'restore', save, hands }, { quiet: true });
-    if (!reply.error) return;
+    S.history = await hands.all();
+    const mine = S.history.filter((e) => e.sid === save.sid).slice(-save.hands_done);
+    const reply = await run({ cmd: 'restore', save, hands: mine }, { quiet: true });
+    // A crash is handled by the restart, which resumes again itself.
+    if (!reply.error || reply.crashed || S.elsewhere) return;
     store(STORE.save, null);
+    toast(`Your saved session could not be resumed (${reply.error}), so a new one has started.`);
   }
   await newSession();
 }
@@ -859,8 +937,9 @@ function exportHands() {
 }
 
 async function importHands(file) {
+  S.history = await hands.all();
   const seen = new Set(S.history.map((e) => `${e.sid}:${e.no}`));
-  let added = 0;
+  const added = [];
   for (const line of (await file.text()).split('\n')) {
     if (!line.trim()) continue;
     try {
@@ -871,13 +950,20 @@ async function importHands(file) {
           Number.isInteger(d.grade) && (d.leak == null || S.info.leaks[d.leak]));
       if (ok && !seen.has(`${entry.sid}:${entry.no}`)) {
         seen.add(`${entry.sid}:${entry.no}`);
-        S.history.push(entry);
-        added++;
+        added.push(entry);
       }
     } catch { /* not a hand: skip the line */ }
   }
-  store(STORE.history, S.history);
-  toast(added ? `${plural(added, 'hand')} imported.` : 'No new hands in that file.');
+  if (added.length) {
+    try {
+      await hands.add(added, HISTORY_KEPT);
+      tabs?.postMessage({ hands: true });
+    } catch {
+      toast('This browser is not letting the page keep the hands.');
+    }
+    S.history = await hands.all();
+  }
+  toast(added.length ? `${plural(added.length, 'hand')} imported.` : 'No new hands in that file.');
   openSettings();
 }
 
@@ -886,9 +972,11 @@ async function importHands(file) {
 let talking = Promise.resolve();
 
 /** Asks Claude for a review, a summary or an answer; replies stream into the feed. */
-function explain(kind, text = '') {
+function explain(kind, text = '', review = undefined) {
   talking = talking.then(async () => {
-    const reply = await run({ cmd: 'chat', kind, text });
+    // A review names its item, so one asked for while an earlier reply was
+    // still arriving is dropped if the table has moved past it.
+    const reply = await run({ cmd: 'chat', kind, text, review });
     const chat = reply.chat;
     if (!chat) return;
     if (kind === 'summary') S.summaryId = chat.id;
@@ -937,7 +1025,7 @@ async function act(action) {
   // Claude explains the reviews shown in full; a sound play needs no lecture.
   const review = reply.view?.feed.findLast((i) => i.kind === 'review');
   if (!reply.error && S.settings.apiKey && review?.detail === 'full' && (last === review || reply.view.kind === 'drill' || last?.kind === 'hand')) {
-    explain('review');
+    explain('review', '', review.id);
   }
 }
 
@@ -1067,6 +1155,9 @@ $('dlg-settings').addEventListener('close', () => {
   store(STORE.settings, S.settings);
   if (S.view) draw(S.view);
 });
+// Taking the session back reloads it from the save the other tab left.
+$('dlg-elsewhere').addEventListener('cancel', (event) => event.preventDefault());
+$('dlg-elsewhere').addEventListener('close', () => location.reload());
 $('export').addEventListener('click', exportHands);
 $('import').addEventListener('click', () => $('import-file').click());
 $('import-file').addEventListener('change', (event) => {
@@ -1083,7 +1174,8 @@ $('clear').addEventListener('click', (event) => {
     return;
   }
   S.history = [];
-  store(STORE.history, null);
+  hands.clear().catch(() => {});
+  tabs?.postMessage({ hands: true });
   store(STORE.save, null);
   $('dlg-settings').close();
   newSession();
@@ -1166,7 +1258,20 @@ document.addEventListener('keydown', (event) => {
 
 // ---- start ----------------------------------------------------------------
 
+/** Moves hands kept in localStorage by older versions into IndexedDB. */
+async function moveOldHands() {
+  const old = load(STORE.history, null);
+  if (!Array.isArray(old) || !(await hands.lasting())) return;
+  try {
+    await hands.add(old, HISTORY_KEPT);
+    store(STORE.history, null);
+  } catch { /* left where it was, to try again next time */ }
+}
+
 async function start() {
+  startEngine();
+  await moveOldHands();
+  S.history = await hands.all();
   try {
     await engineReady;
   } catch (error) {

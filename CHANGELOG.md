@@ -30,9 +30,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tabs, upright or on its side.
 - Sessions that survive a reload: a session is saved as its seed and your
   actions and resumed by replaying them, on the same hand. A save that does
-  not replay to the same results is refused.
-- Leaks and drills in the menu, from the hands kept in the browser; export
-  and import of those hands as a file.
+  not replay to the same results is refused, and you are told so. Only one
+  tab plays the session at a time: another tab that picks it up makes the
+  first one stand aside instead of overwriting it. If the engine fails, it
+  is restarted from the last save.
+- Leaks and drills in the menu, from the hands kept in the browser (in
+  IndexedDB, one record per hand); export and import of those hands as a
+  file.
 - Claude as the coach with your own API key (Settings), called straight from
   the browser.
 - Offline play once loaded, and a manifest for adding it to a home screen.

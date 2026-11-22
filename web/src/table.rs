@@ -311,6 +311,8 @@ pub struct Table {
     guess: Option<usize>,
     guess_asked: Option<u64>,
     last_review: Option<Review>,
+    /// The feed item that shows `last_review`.
+    last_review_id: Option<u64>,
     /// The latest action at the table: who, and in words.
     last_action: Option<(usize, String)>,
     hand_done: bool,
@@ -423,6 +425,13 @@ impl Table {
             }
             "drill" => self.start_drill(command),
             "chat" => {
+                // A review asked for while an earlier reply was still coming
+                // in may be about a decision the table has moved past.
+                if let Some(review) = command["review"].as_u64()
+                    && self.last_review_id != Some(review)
+                {
+                    return Ok(());
+                }
                 let request = self.chat_request(&text("kind"), &text("text"))?;
                 extra.insert("chat".into(), request);
                 Ok(())
@@ -495,7 +504,13 @@ impl Table {
             opponent,
             bot,
             mode,
-            stack_bb: command["stack"].as_u64().unwrap_or(100) as u32,
+            stack_bb: match &command["stack"] {
+                Value::Null => 100,
+                stack => stack
+                    .as_u64()
+                    .and_then(|s| u32::try_from(s).ok())
+                    .ok_or("the stack is out of range")?,
+            },
             hands_done: 0,
             current: Vec::new(),
             skills: [(0, 0); 5],
@@ -523,6 +538,15 @@ impl Table {
     /// and the actions of the hand in progress. Leaves the table as it was
     /// if the save does not replay.
     fn begin(&mut self, save: Save, hands: Vec<Entry>) -> Result<(), String> {
+        let before = std::mem::take(self);
+        let started = self.begin_afresh(save, hands);
+        if started.is_err() {
+            *self = before;
+        }
+        started
+    }
+
+    fn begin_afresh(&mut self, save: Save, hands: Vec<Entry>) -> Result<(), String> {
         if save.v != 1 {
             return Err("the saved session is from another version".into());
         }
@@ -743,6 +767,7 @@ impl Table {
         self.chat.reset();
         self.spot = None;
         self.last_review = None;
+        self.last_review_id = None;
         self.last_action = None;
         self.hand_done = false;
         self.quiz = None;
@@ -905,6 +930,10 @@ impl Table {
         self.dirty = true;
         let Some(question) = quiz.question else {
             if choice >= STYLES.len() {
+                self.quiz = Some(Quiz {
+                    question: None,
+                    id: quiz.id,
+                });
                 return;
             }
             self.guess = Some(choice);
@@ -1018,7 +1047,7 @@ impl Table {
         } else {
             "full"
         };
-        self.push(review_json(review, detail, self.run));
+        self.last_review_id = Some(self.push(review_json(review, detail, self.run)));
         if let Some(Game::Drill { spots, index, .. }) = &self.game {
             let d = &spots[*index];
             let text = format!(
@@ -1686,6 +1715,31 @@ mod tests {
     }
 
     #[test]
+    fn a_save_whose_hand_in_progress_does_not_replay_changes_nothing() {
+        let mut table = new_table("solid");
+        let (_, mut save, entries) = play(&mut table, 2);
+        // No raise to a single chip is ever legal.
+        save["current"] = json!([{ "RaiseTo": 1 }]);
+        let mut other = new_table("station");
+        let reply = other.command(&json!({ "cmd": "restore", "save": save, "hands": entries }));
+        assert!(reply["error"].is_string());
+        assert!(reply.get("save").is_none(), "nothing for the page to store");
+        assert_eq!(reply["view"]["opponent"]["label"], "station");
+        assert_eq!(
+            reply["view"]["session"]["hands"], 0,
+            "the table is untouched"
+        );
+    }
+
+    #[test]
+    fn out_of_range_stacks_are_refused() {
+        let mut table = Table::default();
+        let reply = table.command(&json!({ "cmd": "new", "seed": "1", "stack": 4_294_967_396u64 }));
+        assert!(reply["error"].is_string());
+        assert!(reply["view"].is_null());
+    }
+
+    #[test]
     fn questions_are_asked_and_marked() {
         let mut table = new_table("solid");
         let mut reply = send(&mut table, json!({ "cmd": "view" }));
@@ -1781,6 +1835,12 @@ mod tests {
         let reply = send(&mut table, json!({ "cmd": "chat", "kind": "review" }));
         let chat = &reply["chat"];
         assert!(chat["system"].as_str().unwrap().contains("coach"));
+        // A request for a review the table has moved past gets nothing.
+        let stale = send(
+            &mut table,
+            json!({ "cmd": "chat", "kind": "review", "review": 999_999 }),
+        );
+        assert!(stale.get("chat").is_none());
         let content = chat["messages"][0]["content"].as_str().unwrap();
         assert!(content.contains("FACTS") && content.contains("hero_action"));
         let id = chat["id"].as_u64().unwrap();

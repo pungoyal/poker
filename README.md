@@ -149,11 +149,14 @@ browser's storage and sent only to `api.anthropic.com`; each request sends the
 current hand's conversation and is billed to your key. Nothing else leaves
 your device.
 
-The coach measures in pots, not big blinds: sizes, the value of each option
-and the cost of a mistake are shares of the pot in front of you, and grades
-follow the cost (close under 1% of the pot, an inaccuracy under 5%, a mistake
-under 25%, a blunder beyond). Results and session totals, which add up over
-many pots, stay in big blinds.
+The coach measures in pots, not big blinds. After the flop sizes are shares
+of the pot; before it, multiples of the bet faced (2.5x, 3x). Each option is
+shown by how far it trails the best, as a share of the pot, and grades follow
+that cost: close under 1% of the pot, an inaccuracy under 5%, a mistake under
+25%, a blunder beyond. Small pots are graded as if they held at least 5bb
+after the flop and 20bb before it, so slips in a pot of blinds are not
+overstated. Results and session totals, which add up over many pots, stay in
+big blinds.
 
 Values are averages over the bot's likely hands. On the river they are exact.
 Before it they add an estimate of the betting still to come: a hand ahead of
